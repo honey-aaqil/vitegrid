@@ -11,7 +11,7 @@ function styleToCss(block: DocumentBlock): React.CSSProperties {
   const s = block.style;
   return {
     color: s.color_hex,
-    backgroundColor: s.background_hex,
+    backgroundColor: s.background_hex ?? undefined,
     textAlign: s.align,
     fontFamily: s.font_family,
     fontSize: s.font_size_pt ? `${s.font_size_pt}pt` : undefined,

@@ -4,17 +4,45 @@ import copy
 import json
 import os
 import re
+import types
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Union, get_args, get_origin
 
 import time
 
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+def _annotation_allows_none(annotation: Any) -> bool:
+    """True if the annotation's type union explicitly includes None."""
+    if annotation is None or annotation is type(None):
+        return True
+    origin = get_origin(annotation)
+    if origin is Union or origin is getattr(types, "UnionType", Union):
+        return type(None) in get_args(annotation)
+    return False
+
+
+def _coerce_nones_to_defaults(cls: type[BaseModel], data: Any) -> Any:
+    """Drop None values for non-Optional fields so Pydantic uses field defaults.
+
+    Lets legacy callsites pass ``font_family=None`` to express "no opinion"
+    without violating the blueprint's mandatory-with-defaults schema.
+    """
+    if not isinstance(data, dict):
+        return data
+    cleaned = dict(data)
+    for name, field in cls.model_fields.items():
+        if name in cleaned and cleaned[name] is None and not _annotation_allows_none(
+            field.annotation
+        ):
+            cleaned.pop(name)
+    return cleaned
 
 
 class BlockType(str, Enum):
@@ -25,50 +53,110 @@ class BlockType(str, Enum):
     IMAGE_PLACEHOLDER = "image_placeholder"
 
 
+class ListFormat(str, Enum):
+    DECIMAL = "decimal"
+    BULLET = "bullet"
+    LOWER_LETTER = "lowerLetter"
+    UPPER_ROMAN = "upperRoman"
+
+
+def _default_cell_padding_dxa() -> dict[str, int]:
+    return {"top": 120, "bottom": 120, "left": 180, "right": 180}
+
+
+def _default_margin_px() -> dict[str, float]:
+    return {"top": 72.0, "right": 72.0, "bottom": 72.0, "left": 72.0}
+
+
+class SpacingTokens(BaseModel):
+    before_dxa: int = Field(default=0, description="Paragraph spacing before in twips/dxa.")
+    after_dxa: int = Field(default=0, description="Paragraph spacing after in twips/dxa.")
+    line_spacing_dxa: int = Field(
+        default=240, description="Exact line spacing in twips (240 twips = 12pt)."
+    )
+    line_rule: Literal["auto", "exact", "atLeast"] = Field(
+        default="auto", description="Line spacing rule: auto, exact, atLeast."
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _allow_none_in_strict_fields(cls, data: Any) -> Any:
+        return _coerce_nones_to_defaults(cls, data)
+
+
 class StyleTokens(BaseModel):
-    font_family: str | None = None
-    font_size_pt: float | None = None
-    font_weight: Literal["normal", "bold"] | None = None
-    color_hex: str | None = None
-    background_hex: str | None = None
-    align: Literal["left", "center", "right", "justify"] | None = None
-    border_visible: bool | None = None
+    font_family: str = Field(default="Arial", description="Primary mapped font family name.")
+    font_size_pt: float = Field(default=11.0, description="Absolute font size in points.")
+    font_weight: Literal["normal", "bold"] = Field(
+        default="normal", description="Font weight: normal or bold."
+    )
+    color_hex: str = Field(default="000000", description="RGB hexadecimal text color.")
+    background_hex: str | None = Field(
+        default="FFFFFF", description="Shading RGB hexadecimal fill or None for transparent."
+    )
+    align: Literal["left", "center", "right", "justify"] = Field(
+        default="left", description="Alignment: left, center, right, justify."
+    )
+    border_visible: bool = Field(default=True, description="Whether structural borders are displayed.")
+    cell_padding_dxa: dict[str, int] = Field(
+        default_factory=_default_cell_padding_dxa,
+        description="Explicit cell margins in twips/dxa: keys top/bottom/left/right.",
+    )
+    list_format: ListFormat = Field(
+        default=ListFormat.BULLET, description="Applied format of list bullet/marker."
+    )
+    list_level: int = Field(default=0, description="Hierarchical indentation level of list items.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _allow_none_in_strict_fields(cls, data: Any) -> Any:
+        return _coerce_nones_to_defaults(cls, data)
 
 
 class BoundingBox(BaseModel):
-    x_px: float = 0
-    y_px: float = 0
-    width_px: float = 0
-    height_px: float = 0
+    x_px: float = Field(default=0.0, description="Web canvas coordinate x in pixels.")
+    y_px: float = Field(default=0.0, description="Web canvas coordinate y in pixels.")
+    width_px: float = Field(default=0.0, description="Web canvas width in pixels.")
+    height_px: float = Field(default=0.0, description="Web canvas height in pixels.")
 
 
 class DocumentBlock(BaseModel):
-    id: str
-    type: BlockType
-    text: str | None = None
-    items: list[str] | None = None
-    rows: list[list[str]] | None = None
-    image_ref: str | None = None
-    bbox: BoundingBox | None = None
+    id: str = Field(..., description="Unique alphanumeric structural block identifier.")
+    type: BlockType = Field(..., description="Block structural type.")
+    text: str | None = Field(default=None, description="Raw text for heading/paragraph elements.")
+    items: list[str] | None = Field(default=None, description="Ordered list values for list blocks.")
+    rows: list[list[str]] | None = Field(default=None, description="2D table cells.")
+    image_ref: str | None = Field(default=None, description="Resource locator for graphic assets.")
+    bbox: BoundingBox | None = Field(default=None, description="Canvas bounding box coordinates.")
     style: StyleTokens = Field(default_factory=StyleTokens)
-    lock_tier: int = Field(default=3, ge=1, le=3)
+    spacing: SpacingTokens = Field(default_factory=SpacingTokens)
+    lock_tier: int = Field(default=1, ge=1, le=3, description="Editing restriction tier.")
 
 
 class DocumentLayout(BaseModel):
-    title: str
-    page_width_px: int = 816
-    page_height_px: int = 1056
-    margin_px: dict[str, int] = Field(
-        default_factory=lambda: {"top": 72, "right": 72, "bottom": 72, "left": 72}
+    title: str = Field(..., description="Internal reference document title.")
+    page_width_px: float = Field(
+        default=816.0, description="Web canvas width in pixels (816px = 8.5in at 96dpi)."
     )
-    blocks: list[DocumentBlock]
+    page_height_px: float = Field(
+        default=1056.0, description="Web canvas height in pixels (1056px = 11in at 96dpi)."
+    )
+    margin_px: dict[str, float] = Field(
+        default_factory=_default_margin_px,
+        description="Logical page margin values in web pixels.",
+    )
+    blocks: list[DocumentBlock] = Field(default_factory=list, description="Ordered DOM nodes.")
 
 
 class AuditReport(BaseModel):
-    approved: bool
-    missing_text: list[str] = Field(default_factory=list)
-    layout_issues: list[str] = Field(default_factory=list)
-    patch_instructions: str | None = None
+    approved: bool = Field(..., description="Strict visual similarity verification result.")
+    missing_text: list[str] = Field(default_factory=list, description="Omitted text run data.")
+    layout_issues: list[str] = Field(
+        default_factory=list, description="Flagged metric deviations in spatial alignment."
+    )
+    patch_instructions: str | None = Field(
+        default=None, description="Declarative instructions to resolve layout drift."
+    )
 
 
 def _require_env(name: str) -> str:
@@ -313,25 +401,74 @@ def agent1_structural_parse(markdown: str, tables: list[dict[str, Any]]) -> Docu
     return DocumentLayout(title=title, blocks=blocks)
 
 
-_AGENT2_PROMPT = """You are Agent 2: the Visual Style Token Evaluator for Vitegrid.
+_AGENT2_PROMPT = """
+You are a deterministic optical character and style analyzer inside a high-fidelity document reproduction engine.
+Analyze the provided document image and extract styling parameters with absolute mathematical accuracy.
 
-Ignore textual content. Examine the page image and extract design tokens:
-font family hints, body font size in points, common heading weight, primary
-text color hex, background color hex, dominant alignment, table border
-visibility, and page margin estimates in pixels.
-Return a JSON StyleTokens-shaped object for each detected region."""
+CRITICAL PROCESSING RULES:
+1. Parse font metrics based on character geometries:
+   - Identify font families by matching glyph properties to known system fonts.
+   - Categorize weights by computing the WeightRat = CapH / WStem. Assign "bold" if WeightRat <= 7.5.
+2. Measure vertical spatial gaps between structural line baselines. Compute exact leading and line spacing ratios.
+3. Compute global margins by locating the extreme boundary coordinates of text elements.
+4. If interior grid boundaries exist in tables, set border_visible to true.
+
+Ensure the returned output conforms exactly to the provided JSON schema. No conversational wrappers, no markdown formatting block ticks.
+
+Output Format Schema:
+{
+  "font_family": "Arial",
+  "font_size_pt": 11.0,
+  "font_weight": "normal",
+  "color_hex": "000000",
+  "align": "left",
+  "line_spacing_dxa": 240,
+  "spacing_before_dxa": 120,
+  "spacing_after_dxa": 120,
+  "border_visible": true,
+  "cell_padding_dxa": {"top": 120, "bottom": 120, "left": 180, "right": 180}
+}
+"""
 
 
-class StyleProfile(BaseModel):
-    page_margin_px: dict[str, int] = Field(
-        default_factory=lambda: {"top": 72, "right": 72, "bottom": 72, "left": 72}
-    )
-    heading: StyleTokens = Field(default_factory=StyleTokens)
-    body: StyleTokens = Field(default_factory=StyleTokens)
-    table: StyleTokens = Field(default_factory=StyleTokens)
+class StyleProbe(BaseModel):
+    """Flat StyleTokens + SpacingTokens object emitted by Agent 2 per the blueprint."""
+
+    font_family: str = "Arial"
+    font_size_pt: float = 11.0
+    font_weight: Literal["normal", "bold"] = "normal"
+    color_hex: str = "000000"
+    background_hex: str | None = "FFFFFF"
+    align: Literal["left", "center", "right", "justify"] = "left"
+    border_visible: bool = True
+    cell_padding_dxa: dict[str, int] = Field(default_factory=_default_cell_padding_dxa)
+    line_spacing_dxa: int = 240
+    spacing_before_dxa: int = 0
+    spacing_after_dxa: int = 0
+    page_margin_px: dict[str, float] = Field(default_factory=_default_margin_px)
+
+    def to_style(self) -> StyleTokens:
+        return StyleTokens(
+            font_family=self.font_family,
+            font_size_pt=self.font_size_pt,
+            font_weight=self.font_weight,
+            color_hex=self.color_hex,
+            background_hex=self.background_hex,
+            align=self.align,
+            border_visible=self.border_visible,
+            cell_padding_dxa=dict(self.cell_padding_dxa),
+        )
+
+    def to_spacing(self) -> SpacingTokens:
+        return SpacingTokens(
+            before_dxa=self.spacing_before_dxa,
+            after_dxa=self.spacing_after_dxa,
+            line_spacing_dxa=self.line_spacing_dxa,
+            line_rule="exact" if self.line_spacing_dxa > 0 else "auto",
+        )
 
 
-def agent2_style_evaluate(image_path: str | Path) -> StyleProfile:
+def agent2_style_evaluate(image_path: str | Path) -> StyleProbe:
     path = Path(image_path)
     image_bytes = path.read_bytes()
     mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
@@ -342,9 +479,9 @@ def agent2_style_evaluate(image_path: str | Path) -> StyleProfile:
             _AGENT2_PROMPT,
             genai_types.Part.from_bytes(data=image_bytes, mime_type=mime),
         ],
-        config=_json_config(StyleProfile),
+        config=_json_config(StyleProbe),
     )
-    return _parse_response(response, StyleProfile)  # type: ignore[return-value]
+    return _parse_response(response, StyleProbe)  # type: ignore[return-value]
 
 
 _AGENT3_PROMPT = """You are Agent 3: the Content Generation & Schema Writer for Vitegrid.
@@ -445,6 +582,199 @@ def agent4_audit(source_payload: dict[str, Any], layout: DocumentLayout) -> Audi
     return _parse_response(response, AuditReport)  # type: ignore[return-value]
 
 
+def _parse_hex(color: str | None) -> tuple[int, int, int] | None:
+    if not color:
+        return None
+    s = color.strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(c * 2 for c in s)
+    if len(s) != 6:
+        return None
+    try:
+        return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    except ValueError:
+        return None
+
+
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    def channel(c: int) -> float:
+        v = c / 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+
+    r, g, b = rgb
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def wcag_contrast(fg_hex: str | None, bg_hex: str | None) -> float | None:
+    """WCAG 2.1 contrast ratio. Returns None if either color is unparseable."""
+    fg = _parse_hex(fg_hex)
+    bg = _parse_hex(bg_hex)
+    if fg is None or bg is None:
+        return None
+    lf, lb = _relative_luminance(fg), _relative_luminance(bg)
+    brightest, darkest = max(lf, lb), min(lf, lb)
+    return (brightest + 0.05) / (darkest + 0.05)
+
+
+def _bbox_overlap_metrics(
+    a: BoundingBox, b: BoundingBox
+) -> tuple[float, float, float]:
+    """Return (iou, containment_a_in_b, containment_b_in_a)."""
+    ax0, ay0, ax1, ay1 = a.x_px, a.y_px, a.x_px + a.width_px, a.y_px + a.height_px
+    bx0, by0, bx1, by1 = b.x_px, b.y_px, b.x_px + b.width_px, b.y_px + b.height_px
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0, 0.0, 0.0
+    inter = (ix1 - ix0) * (iy1 - iy0)
+    area_a = max(1e-6, (ax1 - ax0) * (ay1 - ay0))
+    area_b = max(1e-6, (bx1 - bx0) * (by1 - by0))
+    union = area_a + area_b - inter
+    return inter / union, inter / area_a, inter / area_b
+
+
+def _block_text_runs(block: DocumentBlock) -> list[str]:
+    parts: list[str] = []
+    if block.text:
+        parts.append(block.text)
+    if block.items:
+        parts.extend(block.items)
+    if block.rows:
+        for row in block.rows:
+            parts.extend(row)
+    return parts
+
+
+def audit_layout_programmatic(
+    layout: DocumentLayout,
+    source_text_runs: list[str] | None = None,
+    *,
+    iou_threshold: float = 0.15,
+    containment_threshold: float = 0.90,
+    min_contrast: float = 3.0,
+    min_font_pt: float = 4.5,
+    max_font_pt: float = 72.0,
+) -> AuditReport:
+    """Deterministic, non-LLM audit. Complements `agent4_audit`.
+
+    Checks:
+      1. Source text containment (only when `source_text_runs` is provided).
+      2. Pairwise block-bbox collision (IoU above threshold and not nested).
+      3. WCAG contrast between style.color_hex and style.background_hex when both set.
+      4. Font size within rendering bounds (default 4.5pt..72pt).
+      5. Bbox positive width/height and inside page bounds.
+    """
+    missing: list[str] = []
+    issues: list[str] = []
+
+    if source_text_runs:
+        compiled = " ".join(part for block in layout.blocks for part in _block_text_runs(block))
+        normalized = " ".join(compiled.split())
+        for run in source_text_runs:
+            needle = " ".join(run.split())
+            if needle and needle not in normalized:
+                missing.append(run)
+
+    blocks = layout.blocks
+    for i, b1 in enumerate(blocks):
+        if b1.bbox is None or b1.bbox.width_px <= 0 or b1.bbox.height_px <= 0:
+            if b1.bbox is not None:
+                issues.append(f"block[{b1.id}] has non-positive bbox dimensions")
+        else:
+            if b1.bbox.x_px < 0 or b1.bbox.y_px < 0:
+                issues.append(f"block[{b1.id}] bbox starts off-page")
+            if b1.bbox.x_px + b1.bbox.width_px > layout.page_width_px + 0.5:
+                issues.append(f"block[{b1.id}] extends past right edge")
+            if b1.bbox.y_px + b1.bbox.height_px > layout.page_height_px + 0.5:
+                issues.append(f"block[{b1.id}] extends past bottom edge")
+
+        if b1.style.font_size_pt is not None and (
+            b1.style.font_size_pt < min_font_pt or b1.style.font_size_pt > max_font_pt
+        ):
+            issues.append(
+                f"block[{b1.id}] font {b1.style.font_size_pt}pt outside [{min_font_pt},{max_font_pt}]"
+            )
+
+        contrast = wcag_contrast(b1.style.color_hex, b1.style.background_hex)
+        if contrast is not None and contrast < min_contrast:
+            issues.append(
+                f"block[{b1.id}] contrast {contrast:.2f}:1 below WCAG-AA threshold {min_contrast}"
+            )
+
+        if b1.bbox is None:
+            continue
+        for b2 in blocks[i + 1 :]:
+            if b2.bbox is None:
+                continue
+            iou, c_ab, c_ba = _bbox_overlap_metrics(b1.bbox, b2.bbox)
+            if iou < iou_threshold:
+                continue
+            if c_ab >= containment_threshold or c_ba >= containment_threshold:
+                # one is nested inside the other — acceptable
+                continue
+            issues.append(
+                f"blocks[{b1.id}] and [{b2.id}] overlap (IoU={iou:.2f}) without nesting"
+            )
+
+    approved = not missing and not issues
+    return AuditReport(
+        approved=approved,
+        missing_text=missing,
+        layout_issues=issues,
+        patch_instructions=(
+            None
+            if approved
+            else (
+                f"Programmatic audit: {len(missing)} missing text runs, "
+                f"{len(issues)} structural issues. Shift overlapping blocks, "
+                "tighten contrast, restore omitted text."
+            )
+        ),
+    )
+
+
+def _merge_reports(*reports: AuditReport) -> AuditReport:
+    if not reports:
+        return AuditReport(approved=True)
+    approved = all(r.approved for r in reports)
+    seen_missing: dict[str, None] = {}
+    seen_issues: dict[str, None] = {}
+    for r in reports:
+        for m in r.missing_text:
+            seen_missing.setdefault(m, None)
+        for i in r.layout_issues:
+            seen_issues.setdefault(i, None)
+    patch = next((r.patch_instructions for r in reports if r.patch_instructions), None)
+    return AuditReport(
+        approved=approved,
+        missing_text=list(seen_missing),
+        layout_issues=list(seen_issues),
+        patch_instructions=patch,
+    )
+
+
+def _markdown_text_runs(markdown: str) -> list[str]:
+    runs: list[str] = []
+    for line in markdown.splitlines():
+        stripped = line.strip().lstrip("#").lstrip("-*+").lstrip()
+        if not stripped or set(stripped) <= set("|-: "):
+            continue
+        if stripped.startswith("|") or "|" in line and set(line.strip()) <= set("|-: "):
+            continue
+        runs.append(stripped)
+    return runs
+
+
+def _combined_audit(
+    source_payload: dict[str, Any],
+    layout: DocumentLayout,
+    source_text_runs: list[str] | None = None,
+) -> AuditReport:
+    llm = agent4_audit(source_payload, layout)
+    prog = audit_layout_programmatic(layout, source_text_runs)
+    return _merge_reports(llm, prog)
+
+
 def _estimate_block_height(block: DocumentBlock, content_width: float) -> float:
     chars_per_line = max(40, int(content_width / 7))
     if block.type == BlockType.HEADING:
@@ -510,13 +840,13 @@ def auto_layout(layout: DocumentLayout) -> DocumentLayout:
 
 def generate_from_prompt(user_goal: str, max_retries: int = 1) -> tuple[DocumentLayout, AuditReport]:
     layout = auto_layout(agent3_generate_from_prompt(user_goal))
-    report = agent4_audit({"user_goal": user_goal}, layout)
+    report = _combined_audit({"user_goal": user_goal}, layout)
     attempts = 0
     while not report.approved and attempts < max_retries:
         layout = auto_layout(
             agent3_generate_from_prompt(user_goal, patch_directive=report.patch_instructions)
         )
-        report = agent4_audit({"user_goal": user_goal}, layout)
+        report = _combined_audit({"user_goal": user_goal}, layout)
         attempts += 1
     return layout, report
 
@@ -528,17 +858,29 @@ def import_from_parsed(
 ) -> tuple[DocumentLayout, AuditReport]:
     layout = agent1_structural_parse(markdown, tables)
     if template_image_path is not None:
-        style = agent2_style_evaluate(template_image_path)
-        layout.margin_px = style.page_margin_px
+        probe = agent2_style_evaluate(template_image_path)
+        layout.margin_px = dict(probe.page_margin_px)
+        base_style = probe.to_style()
+        base_spacing = probe.to_spacing()
         for block in layout.blocks:
+            # The blueprint's flat StyleProbe is a global baseline. Per-block
+            # structural traits (heading size, table border) overlay on top.
+            new_style = base_style.model_copy()
             if block.type == BlockType.HEADING:
-                block.style = style.heading
+                # Preserve markdown-derived heading size; force bold weight.
+                if block.style.font_size_pt:
+                    new_style.font_size_pt = block.style.font_size_pt
+                new_style.font_weight = "bold"
             elif block.type == BlockType.TABLE:
-                block.style = style.table
-            else:
-                block.style = style.body
+                new_style.border_visible = True
+            block.style = new_style
+            block.spacing = base_spacing.model_copy()
     layout = auto_layout(layout)
-    report = agent4_audit({"markdown": markdown, "tables": tables}, layout)
+    report = _combined_audit(
+        {"markdown": markdown, "tables": tables},
+        layout,
+        source_text_runs=_markdown_text_runs(markdown),
+    )
     return layout, report
 
 
@@ -741,21 +1083,82 @@ def import_from_pdf_extraction(extraction: Any) -> tuple[DocumentLayout, AuditRe
         )
 
     layout = auto_layout(layout)
-    report = agent4_audit({"pdf_pages": len(extraction.pages)}, layout)
+    report = _combined_audit({"pdf_pages": len(extraction.pages)}, layout)
     return layout, report
 
 
-_AGENT5_OCR_PROMPT = """You are Agent 5 (fallback OCR path) for a SCANNED PDF.
+_AGENT_IMAGE_PIPELINE_PROMPT = """
+You are a deterministic image-to-document analyzer inside a high-fidelity
+reproduction engine. Convert the document image(s) into a complete editable
+DocumentLayout JSON object.
 
-No embedded text was found, so you must read the page image as a human would.
-Produce a complete DocumentLayout JSON object containing every visible text
-element. Include text, bbox in PDF points, font family guess, size in points,
-color hex, weight, and alignment. Be exhaustive.
+THREE-STEP MANDATE — execute every step in order and emit results for ALL
+elements you observe. No element may be skipped.
+
+STEP 1 — SPATIAL ANCHORING
+Identify EVERY structural element visible in the image, including:
+  * All text runs (paragraphs, headings, list items, table cells, captions,
+    headers/footers, sidebar text, page numbers).
+  * Hidden / structurally implied elements: column gutters, table grid
+    lines, decorative separators, header/footer rules, alignment guides.
+  * Background fills and border rectangles behind text.
+  * Image regions: emit as `image_placeholder` blocks with their bbox.
+For each element, emit a precise bbox in WEB PIXELS at 96 DPI:
+  bbox = { "x_px": <float>, "y_px": <float>,
+           "width_px": <float>, "height_px": <float> }
+Reading order: top to bottom; within shared rows, left to right.
+Do NOT invent text that is not in the image. Do NOT omit visible text.
+
+STEP 2 — OPTICAL PARSING (per element)
+For each anchored element, extract its exact visual formatting:
+  * font_family: closest standard system font from {Arial, Calibri,
+    Helvetica, Times New Roman, Georgia, Verdana, Cambria, Garamond,
+    Courier New}.
+  * font_size_pt: from glyph cap-height, one decimal place
+    (1pt = 1/72in; assume the image is rendered at 96 DPI).
+  * font_weight via PANOSE WeightRat = CapH / WStem:
+        WeightRat <= 7.5  -->  "bold"
+        WeightRat >  7.5  -->  "normal"
+  * color_hex: hex of the dominant text color, six digits, no "#".
+  * background_hex: hex of the fill BEHIND this element; use `null`
+    when the background is pure white (#FFFFFF) or absent.
+  * align: "left" | "center" | "right" | "justify"  — inferred from
+    x-coordinates of consecutive runs.
+  * border_visible: true iff visible grid lines exist between cells.
+  * cell_padding_dxa (TABLE elements only): the gap between cell text
+    and cell borders, in twentieths of a point  =  (pixel gap) * 15.
+For each element, observe its paragraph rhythm:
+  * line_spacing_dxa = (baseline-to-baseline pixels) * 15
+  * before_dxa, after_dxa = (pixel gap between paragraphs) * 15
+  * line_rule = "exact" for typeset prose with a hard line grid,
+    "auto" otherwise.
+
+STEP 3 — STYLE MAPPING (per block)
+Each block in `blocks[]` carries its OWN StyleTokens and SpacingTokens.
+Do NOT collapse multiple blocks to a single shared style. Heading
+blocks emit their heading metrics; body blocks emit body metrics; table
+cells emit table metrics. List blocks set list_format from
+{bullet, decimal, lowerLetter, upperRoman} based on the observed marker.
+
+PAGE GEOMETRY
+Set page_width_px and page_height_px to match the document's apparent
+proportions at 96 DPI. Default for US Letter portrait is 816 x 1056.
+margin_px is the tight bounding rectangle of all text content, in pixels.
+
+OUTPUT FORMAT
+Return ONE DocumentLayout JSON object. No markdown fences. No commentary.
+Every block has: id ("block-0", "block-1", ... in reading order), type,
+bbox, style, spacing, plus text/items/rows/image_ref depending on type.
+Every numeric field is a number, not a string. background_hex may be null;
+everything else must be present.
 """
 
 
 def agent5_vision_only_scanned(page_images: list[bytes]) -> DocumentLayout:
-    parts: list[Any] = [_AGENT5_OCR_PROMPT]
+    """Multi-page vision-only path for scanned PDFs. Uses the same
+    three-step pipeline as :func:`import_from_image`.
+    """
+    parts: list[Any] = [_AGENT_IMAGE_PIPELINE_PROMPT]
     for image_bytes in page_images:
         parts.append(genai_types.Part.from_bytes(data=image_bytes, mime_type="image/png"))
     config = _json_config(DocumentLayout)
@@ -767,6 +1170,57 @@ def agent5_vision_only_scanned(page_images: list[bytes]) -> DocumentLayout:
         config=config,
     )
     return _parse_response(response, DocumentLayout)  # type: ignore[return-value]
+
+
+_IMAGE_MIME_BY_SUFFIX = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+
+def import_from_image(image_path: str | Path) -> tuple[DocumentLayout, AuditReport]:
+    """Convert a single document image (screenshot / scan) into a complete
+    DocumentLayout via the three-step vision pipeline.
+
+    Step 1 anchors every visible/hidden element with bbox coordinates.
+    Step 2 extracts per-element formatting (font, weight, color, spacing).
+    Step 3 produces a layout where every block carries its OWN style and
+    spacing tokens; nothing is collapsed to a global default.
+
+    The returned layout is gated by the combined LLM + programmatic audit
+    (overlap detection, contrast, font bounds, bbox sanity).
+    """
+    path = Path(image_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Image not found: {path}")
+    suffix = path.suffix.lower()
+    mime = _IMAGE_MIME_BY_SUFFIX.get(suffix, "image/png")
+    image_bytes = path.read_bytes()
+
+    config = _json_config(DocumentLayout)
+    config.temperature = 0.0
+    response = _call_with_retry(
+        _core_client(),
+        model=_vision_model(),
+        contents=[
+            _AGENT_IMAGE_PIPELINE_PROMPT,
+            genai_types.Part.from_bytes(data=image_bytes, mime_type=mime),
+        ],
+        config=config,
+    )
+    layout = _parse_response(response, DocumentLayout)
+    if not isinstance(layout, DocumentLayout):
+        raise RuntimeError("Vision agent did not return a DocumentLayout")
+
+    # Backfill positions for any block the vision agent emitted without bbox.
+    # When the agent followed the prompt every block already has one, so
+    # `auto_layout` becomes a no-op.
+    layout = auto_layout(layout)
+
+    report = _combined_audit({"image_source": path.name}, layout)
+    return layout, report
 
 
 class _BlockReview(BaseModel):
@@ -952,7 +1406,7 @@ def import_from_classified_blocks(
         blocks=blocks,
     )
     layout = auto_layout(layout)
-    report = agent4_audit({"pdf_pages": page_count, "classifier": "heuristic"}, layout)
+    report = _combined_audit({"pdf_pages": page_count, "classifier": "heuristic"}, layout)
     return layout, report
 
 
@@ -984,7 +1438,7 @@ def import_from_docx_blocks(docx_blocks: list[Any]) -> tuple[DocumentLayout, Aud
     title = first_heading or "Imported Document"
     layout = DocumentLayout(title=title, blocks=blocks)
     layout = auto_layout(layout)
-    report = agent4_audit({"docx_blocks": len(blocks)}, layout)
+    report = _combined_audit({"docx_blocks": len(blocks)}, layout)
     return layout, report
 
 

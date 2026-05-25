@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import statistics
 from dataclasses import dataclass, field
@@ -649,7 +650,251 @@ def _is_bold(spans: list[TextSpan]) -> bool:
     return bold_count > len(spans) / 2
 
 
-def classify_pdf_layout(extraction: PdfExtraction) -> list[ClassifiedBlock]:
+def _classify_block_spans(
+    block_lines: list[list[TextSpan]],
+    page_width_pt: float,
+    page_index: int,
+    body_size: float,
+    heading_threshold: float,
+) -> ClassifiedBlock | None:
+    block_spans = [s for line in block_lines for s in line]
+    if not block_spans:
+        return None
+    bbox = _line_bbox(block_spans)
+    font = _majority_font(block_spans)
+    color = _majority_color(block_spans)
+    size_pt = round(_avg_size(block_spans), 1)
+    bold = _is_bold(block_spans)
+    italic = sum(1 for s in block_spans if s.italic) > len(block_spans) / 2
+    line_texts = [_line_text(line) for line in block_lines]
+    joined = " ".join(line_texts).strip()
+    x0, _, x1, _ = bbox
+    align = _line_align(x0, x1, page_width_pt)
+
+    list_lines = [t for t in line_texts if _looks_like_list_marker(t)]
+    if len(list_lines) >= 2 and len(list_lines) / len(line_texts) >= 0.7:
+        items = [_strip_list_marker(t) for t in line_texts if t]
+        return ClassifiedBlock(
+            block_type="list",
+            text=None,
+            items=items,
+            rows=None,
+            font=font,
+            size_pt=size_pt,
+            color_hex=color,
+            bold=bold,
+            italic=italic,
+            align=align,
+            bbox=bbox,
+            page_index=page_index,
+        )
+
+    table_rows = _detect_table(block_lines)
+    if table_rows is not None:
+        return ClassifiedBlock(
+            block_type="table",
+            text=None,
+            items=None,
+            rows=table_rows,
+            font=font,
+            size_pt=size_pt,
+            color_hex=color,
+            bold=bold,
+            italic=italic,
+            align=align,
+            bbox=bbox,
+            page_index=page_index,
+        )
+
+    is_heading = (
+        len(block_lines) == 1
+        and len(joined) < 120
+        and (size_pt >= heading_threshold or (bold and size_pt >= body_size))
+    )
+    return ClassifiedBlock(
+        block_type="heading" if is_heading else "paragraph",
+        text=joined,
+        items=None,
+        rows=None,
+        font=font,
+        size_pt=size_pt,
+        color_hex=color,
+        bold=bold,
+        italic=italic,
+        align=align,
+        bbox=bbox,
+        page_index=page_index,
+    )
+
+
+def _classify_pdf_layout_v1(extraction: PdfExtraction) -> list[ClassifiedBlock]:
+    classified: list[ClassifiedBlock] = []
+    all_spans = [s for page in extraction.pages for s in page.spans]
+    if not all_spans:
+        return classified
+    body_size = statistics.median([s.size_pt for s in all_spans if s.size_pt])
+    heading_threshold = body_size * 1.15
+    for page in extraction.pages:
+        lines = _group_lines(page.spans)
+        block_lines = _group_blocks(lines)
+        for block in block_lines:
+            cb = _classify_block_spans(
+                block, page.page_width_pt, page.page_index, body_size, heading_threshold
+            )
+            if cb is not None:
+                classified.append(cb)
+    return classified
+
+
+# ----- Parser v2 (projection columns + cross-row table anchors) ----------------
+
+
+def detect_columns(
+    spans: list[TextSpan],
+    page_width_pt: float,
+    *,
+    min_gutter_pt: float = 18.0,
+    min_column_pt: float = 60.0,
+) -> list[tuple[float, float]]:
+    """Find column x-ranges via horizontal projection of span coverage.
+
+    Sweep-line over text x-intervals: any contiguous gutter of >= `min_gutter_pt`
+    that has zero text coverage separates two columns. Columns thinner than
+    `min_column_pt` are absorbed into their nearest neighbor to avoid splitting
+    on a single floating word.
+    """
+    if not spans:
+        return [(0.0, page_width_pt)]
+
+    events: list[tuple[float, int]] = []
+    for s in spans:
+        x0, _, x1, _ = s.bbox
+        if x1 <= x0:
+            continue
+        events.append((float(x0), +1))
+        events.append((float(x1), -1))
+    events.sort()
+
+    coverage_runs: list[tuple[float, float]] = []
+    active = 0
+    run_start: float | None = None
+    for x, delta in events:
+        prev = active
+        active += delta
+        if prev == 0 and active > 0:
+            run_start = x
+        elif prev > 0 and active == 0 and run_start is not None:
+            coverage_runs.append((run_start, x))
+            run_start = None
+    if run_start is not None:
+        coverage_runs.append((run_start, float(page_width_pt)))
+
+    # Merge runs separated by gutters smaller than min_gutter_pt.
+    merged: list[tuple[float, float]] = []
+    for start, end in coverage_runs:
+        if merged and start - merged[-1][1] < min_gutter_pt:
+            merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+
+    # Drop columns thinner than min_column_pt by merging into nearest neighbor.
+    if len(merged) > 1:
+        i = 0
+        while i < len(merged):
+            start, end = merged[i]
+            if end - start < min_column_pt:
+                if i == 0:
+                    merged[1] = (start, merged[1][1])
+                    merged.pop(0)
+                elif i == len(merged) - 1:
+                    merged[i - 1] = (merged[i - 1][0], end)
+                    merged.pop(i)
+                    i -= 1
+                else:
+                    # Merge into whichever neighbor has the smaller gutter.
+                    left_gap = start - merged[i - 1][1]
+                    right_gap = merged[i + 1][0] - end
+                    if left_gap <= right_gap:
+                        merged[i - 1] = (merged[i - 1][0], end)
+                    else:
+                        merged[i + 1] = (start, merged[i + 1][1])
+                    merged.pop(i)
+                    continue
+            i += 1
+
+    return merged if merged else [(0.0, page_width_pt)]
+
+
+def _spans_in_column(spans: list[TextSpan], col: tuple[float, float]) -> list[TextSpan]:
+    cx0, cx1 = col
+    return [
+        s
+        for s in spans
+        if (s.bbox[0] + s.bbox[2]) / 2.0 >= cx0 - 0.5
+        and (s.bbox[0] + s.bbox[2]) / 2.0 <= cx1 + 0.5
+    ]
+
+
+def _detect_table_v2(block_lines: list[list[TextSpan]]) -> list[list[str]] | None:
+    """Detect unbordered tables by cross-row x-anchor alignment.
+
+    Strategy: cluster the x-start of every span across all lines. If we can find
+    >= 2 anchor clusters that each contain >= 2 lines' worth of spans, and the
+    block has >= 2 lines whose spans align to >= 2 of those anchors, that block
+    is a table. This catches modern unbordered tables where v1 fails because it
+    requires intra-line whitespace gaps.
+    """
+    if len(block_lines) < 2:
+        return None
+    anchors: list[float] = []
+    eps = 8.0
+    for line in block_lines:
+        for span in line:
+            placed = False
+            for i, a in enumerate(anchors):
+                if abs(span.bbox[0] - a) <= eps:
+                    anchors[i] = (a + span.bbox[0]) / 2.0
+                    placed = True
+                    break
+            if not placed:
+                anchors.append(span.bbox[0])
+    anchors.sort()
+
+    line_anchor_hits: list[list[int]] = []
+    for line in block_lines:
+        hits: list[int] = []
+        for span in line:
+            for i, a in enumerate(anchors):
+                if abs(span.bbox[0] - a) <= eps:
+                    if i not in hits:
+                        hits.append(i)
+                    break
+        line_anchor_hits.append(sorted(hits))
+
+    multi = [h for h in line_anchor_hits if len(h) >= 2]
+    if len(multi) < 2:
+        return None
+    target = sorted({i for h in multi for i in h})
+    if len(target) < 2:
+        return None
+
+    rows: list[list[str]] = []
+    for line, hits in zip(block_lines, line_anchor_hits):
+        if len(hits) < 2:
+            continue
+        cells: list[list[str]] = [[] for _ in target]
+        anchor_xs = [anchors[i] for i in target]
+        for span in line:
+            j = 0
+            for k, ax in enumerate(anchor_xs):
+                if span.bbox[0] >= ax - eps:
+                    j = k
+            cells[j].append(span.text)
+        rows.append([" ".join(parts).strip() for parts in cells])
+    return rows if len(rows) >= 2 else None
+
+
+def _classify_pdf_layout_v2(extraction: PdfExtraction) -> list[ClassifiedBlock]:
     classified: list[ClassifiedBlock] = []
     all_spans = [s for page in extraction.pages for s in page.spans]
     if not all_spans:
@@ -658,84 +903,49 @@ def classify_pdf_layout(extraction: PdfExtraction) -> list[ClassifiedBlock]:
     heading_threshold = body_size * 1.15
 
     for page in extraction.pages:
-        lines = _group_lines(page.spans)
-        block_lines = _group_blocks(lines)
-        for block in block_lines:
-            block_spans = [s for line in block for s in line]
-            if not block_spans:
+        columns = detect_columns(page.spans, page.page_width_pt)
+        for column in columns:
+            col_spans = _spans_in_column(page.spans, column)
+            if not col_spans:
                 continue
-            bbox = _line_bbox([s for s in block_spans])
-            font = _majority_font(block_spans)
-            color = _majority_color(block_spans)
-            size_pt = round(_avg_size(block_spans), 1)
-            bold = _is_bold(block_spans)
-            italic = sum(1 for s in block_spans if s.italic) > len(block_spans) / 2
-            line_texts = [_line_text(line) for line in block]
-            joined = " ".join(line_texts).strip()
-            x0, _, x1, _ = bbox
-            align = _line_align(x0, x1, page.page_width_pt)
-
-            list_lines = [t for t in line_texts if _looks_like_list_marker(t)]
-            if len(list_lines) >= 2 and len(list_lines) / len(line_texts) >= 0.7:
-                items = [_strip_list_marker(t) for t in line_texts if t]
-                classified.append(
-                    ClassifiedBlock(
-                        block_type="list",
-                        text=None,
-                        items=items,
-                        rows=None,
-                        font=font,
-                        size_pt=size_pt,
-                        color_hex=color,
-                        bold=bold,
-                        italic=italic,
-                        align=align,
-                        bbox=bbox,
-                        page_index=page.page_index,
+            lines = _group_lines(col_spans)
+            block_lines_list = _group_blocks(lines)
+            for block in block_lines_list:
+                block_spans = [s for line in block for s in line]
+                if not block_spans:
+                    continue
+                # Try v2's cross-row table detector first; fall back to v1 path.
+                table_rows = _detect_table_v2(block)
+                if table_rows is not None:
+                    bbox = _line_bbox(block_spans)
+                    classified.append(
+                        ClassifiedBlock(
+                            block_type="table",
+                            text=None,
+                            items=None,
+                            rows=table_rows,
+                            font=_majority_font(block_spans),
+                            size_pt=round(_avg_size(block_spans), 1),
+                            color_hex=_majority_color(block_spans),
+                            bold=_is_bold(block_spans),
+                            italic=sum(1 for s in block_spans if s.italic) > len(block_spans) / 2,
+                            align=_line_align(bbox[0], bbox[2], page.page_width_pt),
+                            bbox=bbox,
+                            page_index=page.page_index,
+                        )
                     )
+                    continue
+                cb = _classify_block_spans(
+                    block, page.page_width_pt, page.page_index, body_size, heading_threshold
                 )
-                continue
-
-            table_rows = _detect_table(block)
-            if table_rows is not None:
-                classified.append(
-                    ClassifiedBlock(
-                        block_type="table",
-                        text=None,
-                        items=None,
-                        rows=table_rows,
-                        font=font,
-                        size_pt=size_pt,
-                        color_hex=color,
-                        bold=bold,
-                        italic=italic,
-                        align=align,
-                        bbox=bbox,
-                        page_index=page.page_index,
-                    )
-                )
-                continue
-
-            is_heading = (
-                len(block) == 1
-                and len(joined) < 120
-                and (size_pt >= heading_threshold or (bold and size_pt >= body_size))
-            )
-            block_type = "heading" if is_heading else "paragraph"
-            classified.append(
-                ClassifiedBlock(
-                    block_type=block_type,
-                    text=joined,
-                    items=None,
-                    rows=None,
-                    font=font,
-                    size_pt=size_pt,
-                    color_hex=color,
-                    bold=bold,
-                    italic=italic,
-                    align=align,
-                    bbox=bbox,
-                    page_index=page.page_index,
-                )
-            )
+                if cb is not None:
+                    classified.append(cb)
     return classified
+
+
+def classify_pdf_layout(extraction: PdfExtraction) -> list[ClassifiedBlock]:
+    """Dispatch to v1 or v2 based on `VITEGRID_PARSER`. v1 stays the default."""
+    parser_version = os.environ.get("VITEGRID_PARSER", "v1").lower()
+    if parser_version == "v2":
+        return _classify_pdf_layout_v2(extraction)
+    return _classify_pdf_layout_v1(extraction)

@@ -27,8 +27,10 @@ from database import ImageAsset, Template, get_db, init_db
 UPLOAD_DIR = Path(os.environ.get("VITEGRID_UPLOAD_DIR", "static/uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-ALLOWED_DOC_SUFFIXES = {".pdf", ".docx"}
 ALLOWED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+# Images are also accepted as the primary document — they route through the
+# three-step vision pipeline in :func:`agent.import_from_image`.
+ALLOWED_DOC_SUFFIXES = {".pdf", ".docx"} | ALLOWED_IMAGE_SUFFIXES
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -158,6 +160,10 @@ async def import_layout(
     elif doc_path.suffix.lower() == ".docx":
         docx_blocks = docparser.extract_docx_layout(doc_path)
         layout, report = agent.import_from_docx_blocks(docx_blocks)
+    elif doc_path.suffix.lower() in ALLOWED_IMAGE_SUFFIXES:
+        # Image-as-primary-document: full three-step vision pipeline
+        # (spatial anchoring -> optical parsing -> per-element style mapping).
+        layout, report = agent.import_from_image(doc_path)
     else:
         parsed = docparser.parse_document(doc_path)
         layout, report = agent.import_from_parsed(

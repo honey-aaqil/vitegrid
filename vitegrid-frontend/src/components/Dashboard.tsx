@@ -85,16 +85,17 @@ export function Dashboard({ onReady }: Props) {
       <section className="rounded-lg border border-line bg-panel p-6">
         <h2 className="text-lg font-semibold">Import layout</h2>
         <p className="mt-1 text-sm text-muted">
-          PDFs are rendered as page images and analyzed visually by Gemma 4 for high-fidelity
-          structure extraction. DOCX uses deterministic parsing.
+          PDFs are rendered as page images and analyzed visually. DOCX uses deterministic
+          parsing. Image uploads (PNG, JPG, WebP) run through the three-step vision
+          pipeline: spatial anchoring &rarr; optical parsing &rarr; per-element style mapping.
         </p>
         <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
           <label className="flex cursor-pointer flex-col rounded border border-dashed border-line p-4 text-sm hover:border-accent">
             <span className="font-medium">Document</span>
-            <span className="text-muted">{doc?.name ?? "Choose .pdf or .docx..."}</span>
+            <span className="text-muted">{doc?.name ?? "Choose .pdf, .docx, .png, .jpg, .webp..."}</span>
             <input
               type="file"
-              accept=".pdf,.docx"
+              accept=".pdf,.docx,.png,.jpg,.jpeg,.webp"
               className="hidden"
               disabled={busy !== null}
               onChange={(e) => setDoc(e.target.files?.[0] ?? null)}
