@@ -571,16 +571,24 @@ CHECK 3 (id ordering):
 
 CHECK 4 (bbox sanity):
   For each block whose bbox is NOT null: x_px>=0, y_px>=0, width_px>0,
-  height_px>0, and (x_px+width_px) <= page_width_px.
+  height_px>0.
 
-  *** DO NOT FLAG vertical overflow. ***
-  Blocks whose y_px or (y_px + height_px) exceed page_height_px are NOT
-  bugs. The exported .docx is flow-paginated by Microsoft Word, so a
-  document with more than one page of content legitimately has many
-  blocks past page_height_px. Treat page_height_px as a hint for page-1
-  geometry only; never compare any block's y_px against it. Do not emit
-  layout_issues like "extends past bottom", "exceeds page_height_px",
-  or anything that compares y_px to page_height_px. Multi-page is normal.
+  *** DO NOT FLAG page-edge overflow on EITHER axis. ***
+  - Blocks whose y_px or (y_px+height_px) exceed page_height_px are NOT
+    bugs. The exported .docx is flow-paginated by Microsoft Word, so a
+    document with more than one page of content legitimately has many
+    blocks past page_height_px.
+  - Blocks whose x_px or (x_px+width_px) exceed page_width_px are also
+    NOT bugs. Paragraphs / headings / lists flow-wrap to the section's
+    content width; tables are constrained to contentWidthDxa by the
+    compiler. Live-preview bboxes wider than the page just mean the
+    preview rect was generous; the exported .docx still fits the section.
+
+  Treat page_width_px and page_height_px as hints for page-1 geometry
+  only; never compare any block's bbox edges against them. Do not emit
+  layout_issues like "extends past bottom", "extends past right edge",
+  "exceeds page_height_px", "exceeds page_width_px", or any string that
+  compares bbox dimensions to page dimensions.
 
   Null bbox is allowed and not a failure.
 
@@ -706,12 +714,15 @@ def audit_layout_programmatic(
         else:
             if b1.bbox.x_px < 0 or b1.bbox.y_px < 0:
                 issues.append(f"block[{b1.id}] bbox starts off-page")
-            if b1.bbox.x_px + b1.bbox.width_px > layout.page_width_px + 0.5:
-                issues.append(f"block[{b1.id}] extends past right edge")
-            # No vertical-edge check: OpenXML flow-paginates the rendered .docx
-            # automatically, so a layout with more than one page of content
-            # legitimately has blocks with y_px > page_height_px. Horizontal
-            # overflow (above) IS a real bug because page width is fixed.
+            # No page-edge overflow check (vertical or horizontal). The exported
+            # .docx is flow-paginated by Word AND paragraphs / headings / lists
+            # are flow-wrapped to the section's content width. A bbox whose
+            # width_px exceeds page_width_px just means the live-preview rect
+            # was wider than the page rect: Word still wraps the text to the
+            # section. Tables are constrained to contentWidthDxa by the
+            # compiler (Patch 3) so bbox overflow there does not affect the
+            # actual table width either. Real layout bugs (IoU overlap,
+            # contrast, font bounds) are still caught below.
 
         if b1.style.font_size_pt is not None and (
             b1.style.font_size_pt < min_font_pt or b1.style.font_size_pt > max_font_pt
@@ -758,11 +769,13 @@ def audit_layout_programmatic(
     )
 
 
-# Patterns that flag vertical-overflow false positives. The exported .docx is
-# flow-paginated by Word, so blocks with y_px > page_height_px are legitimate
-# multi-page content, not bugs. The LLM auditor occasionally hallucinates this
-# check even when the prompt forbids it, so we strip the messages here too.
-_BOTTOM_EDGE_FALSE_POSITIVE_PATTERNS = (
+# Patterns that flag page-edge overflow false positives. The exported .docx
+# is flow-paginated AND text is flow-wrapped to the section width, so bbox
+# overflow on EITHER axis is not a real layout bug. The LLM auditor still
+# occasionally hallucinates these checks despite the prompt forbidding them,
+# so we strip the messages here too as defense in depth.
+_PAGE_EDGE_FALSE_POSITIVE_PATTERNS = (
+    # vertical / bottom-edge
     "extends past bottom",
     "past bottom edge",
     "exceeds page_height",
@@ -771,21 +784,38 @@ _BOTTOM_EDGE_FALSE_POSITIVE_PATTERNS = (
     "below page_height",
     "below page height",
     "outside page bounds (bottom",
+    # horizontal / right-edge
+    "extends past right",
+    "past right edge",
+    "exceeds page_width",
+    "exceeds page width",
+    "x_px + width_px",
+    "beyond page_width",
+    "beyond page width",
+    "outside page bounds (right",
 )
 
+# Backwards-compatible alias for callers that referenced the old name.
+_BOTTOM_EDGE_FALSE_POSITIVE_PATTERNS = _PAGE_EDGE_FALSE_POSITIVE_PATTERNS
 
-def _is_bottom_edge_false_positive(issue: str) -> bool:
+
+def _is_page_edge_false_positive(issue: str) -> bool:
     lower = issue.lower()
-    return any(p in lower for p in _BOTTOM_EDGE_FALSE_POSITIVE_PATTERNS)
+    return any(p in lower for p in _PAGE_EDGE_FALSE_POSITIVE_PATTERNS)
 
 
-def _strip_bottom_edge_false_positives(report: AuditReport) -> AuditReport:
-    """Drop bottom-edge / page-height issues from any audit report.
+# Backwards-compatible alias for tests that import the old name.
+_is_bottom_edge_false_positive = _is_page_edge_false_positive
 
-    Vertical overflow is normal for multi-page imports. If filtering leaves
+
+def _strip_page_edge_false_positives(report: AuditReport) -> AuditReport:
+    """Drop page-edge overflow issues (either axis) from any audit report.
+
+    OpenXML flow-paginates vertically and flow-wraps horizontally, so bbox
+    overflow does not correspond to a real broken layout. If filtering leaves
     no issues and no missing text, the report is marked approved.
     """
-    kept_issues = [i for i in report.layout_issues if not _is_bottom_edge_false_positive(i)]
+    kept_issues = [i for i in report.layout_issues if not _is_page_edge_false_positive(i)]
     if len(kept_issues) == len(report.layout_issues):
         return report
     approved = not kept_issues and not report.missing_text
@@ -795,6 +825,10 @@ def _strip_bottom_edge_false_positives(report: AuditReport) -> AuditReport:
         layout_issues=kept_issues,
         patch_instructions=None if approved else report.patch_instructions,
     )
+
+
+# Backwards-compatible alias for prior name.
+_strip_bottom_edge_false_positives = _strip_page_edge_false_positives
 
 
 def _merge_reports(*reports: AuditReport) -> AuditReport:
@@ -837,9 +871,9 @@ def _combined_audit(
     llm = agent4_audit(source_payload, layout)
     prog = audit_layout_programmatic(layout, source_text_runs)
     merged = _merge_reports(llm, prog)
-    # Defense in depth: the LLM auditor occasionally invents the off-page-Y
-    # check even when the prompt forbids it. Strip those false positives.
-    return _strip_bottom_edge_false_positives(merged)
+    # Defense in depth: the LLM auditor occasionally invents the page-edge
+    # overflow checks even when the prompt forbids them. Strip both axes.
+    return _strip_page_edge_false_positives(merged)
 
 
 def _estimate_block_height(block: DocumentBlock, content_width: float) -> float:

@@ -187,19 +187,51 @@ def case_missing_text() -> None:
 
 
 def case_off_page() -> None:
-    print("\n=== block off-page bounds: horizontal overflow is a bug ===")
+    """Negative-coordinate bboxes are the only off-page case we still flag.
+    Page-edge OVERFLOW on either axis is allowed because Word flow-wraps and
+    flow-paginates (see `case_multi_page_horizontal_overflow_is_allowed` and
+    `case_multi_page_bbox_is_allowed`)."""
+    print("\n=== block off-page: negative origin is a bug ===")
     layout = make_layout([
         DocumentBlock(
-            id="overflow",
+            id="neg",
             type=BlockType.PARAGRAPH,
             text="x",
-            bbox=BoundingBox(x_px=72, y_px=72, width_px=2000, height_px=80),
+            bbox=BoundingBox(x_px=-10, y_px=-5, width_px=100, height_px=20),
             style=StyleTokens(font_size_pt=11.0),
         ),
     ])
     r = audit_layout_programmatic(layout)
     expect("not approved", not r.approved)
-    expect("right-edge issue surfaced", any("right edge" in i for i in r.layout_issues))
+    expect(
+        "negative-origin issue surfaced",
+        any("starts off-page" in i for i in r.layout_issues),
+        info=str(r.layout_issues),
+    )
+
+
+def case_multi_page_horizontal_overflow_is_allowed() -> None:
+    """Regression: production audit flagged 13 blocks for 'extends past right
+    edge' on a PDF iLovePDF converts without complaint. Word flow-wraps text
+    to the section content width, so horizontal bbox overflow is not a real
+    layout bug; we mirror the existing vertical-overflow tolerance."""
+    print("\n=== horizontal page-edge overflow is approved ===")
+    blocks = [
+        DocumentBlock(
+            id=f"block-{i}",
+            type=BlockType.PARAGRAPH,
+            text=f"line {i}",
+            # x+width = 72 + 800 = 872, well past the 816 page width
+            bbox=BoundingBox(x_px=72, y_px=72 + i * 18, width_px=800, height_px=16),
+            style=StyleTokens(font_size_pt=11.0, color_hex="000000", background_hex="FFFFFF"),
+        )
+        for i in range(13)
+    ]
+    layout = make_layout(blocks)
+    r = audit_layout_programmatic(layout)
+    right_edge_issues = [i for i in r.layout_issues if "right" in i.lower()]
+    expect("no right-edge issues flagged", right_edge_issues == [], info=str(right_edge_issues))
+    expect("approved", r.approved, info=str(r.layout_issues))
 
 
 def case_filter_strips_llm_bottom_edge_messages() -> None:
@@ -366,6 +398,7 @@ if __name__ == "__main__":
     case_missing_text()
     case_off_page()
     case_multi_page_bbox_is_allowed()
+    case_multi_page_horizontal_overflow_is_allowed()
     case_filter_strips_llm_bottom_edge_messages()
     case_merge_reports()
     case_none_coercion_to_defaults()
