@@ -987,7 +987,11 @@ Rules:
 - Group spans that visually belong together (same line, same paragraph, same column).
 - A list has multiple short items at similar x-coordinates with bullets or numbers
   in nearby spans; group each item's content spans into one inner list.
-- A table is a grid; rows are aligned by y, columns are aligned by x.
+- STRICT TABLE TOPOLOGY RULE: A table is exclusively for genuine data grids
+  containing explicit, visible dividing lines or formal, repetitive data
+  headers. DO NOT use "table" for multi-column layout text, key-value pairs,
+  or resume skill sections. If text is simply aligned in invisible columns
+  without gridlines, you MUST classify it as a "list" or a "paragraph".
 - Output blocks in TOP-TO-BOTTOM reading order.
 - EVERY non-noise span index from the input MUST appear in some block's span_indices,
   list_items, or table_rows. Do not drop content.
@@ -996,19 +1000,54 @@ Rules:
 
 
 def _assemble_text_from_spans(span_indices: list[int], spans: list[Any]) -> str:
+    """Assemble text spans into continuous strings via proximity-aware gap
+    detection so PDF tokenization artifacts (font-subset boundaries, TJ
+    operator splits, kerning adjustments) don't fracture words.
+
+    For two consecutive spans S1, S2 on the same baseline, define the
+    horizontal gap as `x_gap = S2.x0 - S1.x1`. If `x_gap < font_size * 0.25`,
+    treat as intra-word continuation and concatenate without inserting a
+    space. Negative gaps (overlap due to kerning) are also intra-word.
+    Otherwise insert a single space at the boundary.
+    """
     parts = [spans[i] for i in span_indices if 0 <= i < len(spans)]
     if not parts:
         return ""
+    # Primary sort: quantized Y baseline (4-pt buckets). Secondary: exact X.
     parts.sort(key=lambda s: (round(s.bbox[1] / 4), s.bbox[0]))
+    line_height = max((p.size_pt for p in parts), default=12.0) * 1.2
+
     out_lines: list[list[str]] = [[]]
     last_y: float | None = None
-    line_height = max((p.size_pt for p in parts), default=12.0) * 1.2
+    last_x_end: float | None = None
+
     for span in parts:
         cy = (span.bbox[1] + span.bbox[3]) / 2
-        if last_y is not None and abs(cy - last_y) > line_height * 0.6:
+        new_line = last_y is not None and abs(cy - last_y) > line_height * 0.6
+        if new_line:
             out_lines.append([])
-        out_lines[-1].append(span.text)
+            last_x_end = None
+
+        font_size = span.size_pt if span.size_pt else 12.0
+        text = span.text
+
+        if not out_lines[-1] or last_x_end is None:
+            out_lines[-1].append(text)
+        else:
+            x_gap = span.bbox[0] - last_x_end
+            intra_word_threshold = font_size * 0.25
+            # Tight (or slightly overlapping due to kerning) gaps mean the
+            # spans are fragments of the same word. Hard cap the negative
+            # overlap at -font_size to reject totally unrelated overlapping
+            # spans.
+            if -font_size < x_gap < intra_word_threshold:
+                out_lines[-1][-1] = out_lines[-1][-1] + text
+            else:
+                out_lines[-1].append(text)
+
         last_y = cy
+        last_x_end = span.bbox[2]
+
     return "\n".join(" ".join(line).strip() for line in out_lines).strip()
 
 
@@ -1176,6 +1215,12 @@ For each element, emit a precise bbox in WEB PIXELS at 96 DPI:
 Reading order: top to bottom; within shared rows, left to right.
 Do NOT invent text that is not in the image. Do NOT omit visible text.
 
+CRITICAL TOPOLOGICAL CONSTRAINT: Do NOT group multi-column layouts, resume
+skill lists, or key-value structures into `table` blocks unless explicit,
+visible gridlines physically intersect them. Such structures must be mapped
+to `list` or `paragraph` blocks. True tables MUST possess visible structural
+borders.
+
 STEP 2 — OPTICAL PARSING (per element)
 For each anchored element, extract its exact visual formatting:
   * font_family: closest standard system font from {Arial, Calibri,
@@ -1309,9 +1354,11 @@ and a short text preview.
 For each block, decide whether the proposed type is correct. If not,
 return the correct type. Valid types:
 - heading: large or visually emphasized title/section label
-- paragraph: prose text
-- list: bulleted/numbered enumeration
-- table: grid of rows and columns
+- paragraph: prose text (including multi-column layout text without gridlines)
+- list: bulleted/numbered enumeration (including aligned key-value resume pairs)
+- table: STRICTLY grids of rows and columns enclosed by visible structural lines.
+  Do NOT override a paragraph or list back to table merely because text shows
+  column-style alignment. Tables require visible borders or formal data headers.
 - image_placeholder: figure or photo region
 
 Trust the bbox and preview. Look at the page image to judge visual emphasis

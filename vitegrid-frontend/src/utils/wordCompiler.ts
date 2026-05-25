@@ -15,8 +15,6 @@ import {
   TextRun,
   WidthType,
 } from "docx";
-import { saveAs } from "file-saver";
-
 import type {
   CellPaddingDxa,
   DocumentBlock,
@@ -207,7 +205,40 @@ async function blockToChildren(
       const rows = block.rows ?? [];
       if (rows.length === 0) return [];
       const colCount = Math.max(1, ...rows.map((r) => r.length));
-      const colWidthDxa = Math.floor(contentWidthDxa / colCount);
+
+      // Allocate DXA per column proportional to the max character length
+      // observed in that column. Columns of dense paragraphs expand;
+      // columns of short tokens shrink. A 30px floor per column prevents
+      // zero-width collapse — we reserve the floor first, then distribute
+      // only the remainder proportionally so that the columns sum to
+      // exactly `contentWidthDxa` (avoids Word rebalancing the layout).
+      const colMaxChars = Array(colCount).fill(1);
+      for (const row of rows) {
+        for (let c = 0; c < colCount; c++) {
+          const cell = row[c] ?? "";
+          const len = cell.trim().length;
+          if (len > colMaxChars[c]) colMaxChars[c] = len;
+        }
+      }
+      const minColDxa = pxToDxa(30);
+      const reservedDxa = Math.min(minColDxa * colCount, contentWidthDxa);
+      const remainderDxa = Math.max(0, contentWidthDxa - reservedDxa);
+      const totalChars = colMaxChars.reduce((sum, val) => sum + val, 0) || 1;
+      const columnWidthsDxa = colMaxChars.map((chars) => {
+        const ratio = chars / totalChars;
+        return Math.floor(reservedDxa / colCount) + Math.floor(remainderDxa * ratio);
+      });
+      // Absorb any rounding drift (≤ colCount DXA) into the widest column
+      // so column widths sum to exactly contentWidthDxa.
+      const drift = contentWidthDxa - columnWidthsDxa.reduce((a, b) => a + b, 0);
+      if (drift !== 0) {
+        let widestIdx = 0;
+        for (let i = 1; i < colCount; i++) {
+          if (columnWidthsDxa[i] > columnWidthsDxa[widestIdx]) widestIdx = i;
+        }
+        columnWidthsDxa[widestIdx] += drift;
+      }
+
       const visible = block.style.border_visible !== false;
       const border = {
         style: visible ? BorderStyle.SINGLE : BorderStyle.NONE,
@@ -215,33 +246,38 @@ async function blockToChildren(
         color: "000000",
       };
       const padding = cellPaddingFor(block.style);
+
       const table = new Table({
         width: { size: contentWidthDxa, type: WidthType.DXA },
-        columnWidths: Array(colCount).fill(colWidthDxa),
+        columnWidths: columnWidthsDxa,
         layout: TableLayoutType.FIXED,
         rows: rows.map(
           (row) =>
             new TableRow({
-              children: row.map(
-                (cell) =>
-                  new TableCell({
-                    width: { size: colWidthDxa, type: WidthType.DXA },
-                    margins: {
-                      top: padding.top,
-                      bottom: padding.bottom,
-                      left: padding.left,
-                      right: padding.right,
-                      marginUnitType: WidthType.DXA,
-                    },
-                    borders: {
-                      top: border,
-                      bottom: border,
-                      left: border,
-                      right: border,
-                    },
-                    children: [new Paragraph({ children: [textRun(cell, block.style)] })],
-                  }),
-              ),
+              // Strict bounds: emit exactly colCount cells per row so a
+              // short row never crashes the OpenXML generator on out-of-
+              // bounds access.
+              children: Array.from({ length: colCount }).map((_, colIndex) => {
+                const cellText = row[colIndex] ?? "";
+                const cellWidth = columnWidthsDxa[colIndex];
+                return new TableCell({
+                  width: { size: cellWidth, type: WidthType.DXA },
+                  margins: {
+                    top: padding.top,
+                    bottom: padding.bottom,
+                    left: padding.left,
+                    right: padding.right,
+                    marginUnitType: WidthType.DXA,
+                  },
+                  borders: {
+                    top: border,
+                    bottom: border,
+                    left: border,
+                    right: border,
+                  },
+                  children: [new Paragraph({ children: [textRun(cellText, block.style)] })],
+                });
+              }),
             }),
         ),
       });
@@ -371,6 +407,9 @@ export async function compileToDocx(layout: DocumentLayout): Promise<Blob> {
 }
 
 export async function downloadDocx(layout: DocumentLayout, filename = "vitegrid.docx"): Promise<void> {
+  // Lazy import so the compiler module also loads cleanly under Node (for tests)
+  // where the browser-only `file-saver` package would otherwise blow up.
+  const { saveAs } = await import("file-saver");
   const blob = await compileToDocx(layout);
   saveAs(blob, filename);
 }

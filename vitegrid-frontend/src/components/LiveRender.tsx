@@ -52,9 +52,9 @@ function RenderedBlock({ block }: { block: DocumentBlock }) {
                   <td
                     key={c}
                     className={
-                      block.style.border_visible !== false
-                        ? "border border-black/40 px-2 py-1"
-                        : "px-2 py-1"
+                      block.style.border_visible === true
+                        ? "border border-black/40 px-2 py-1 align-top break-words"
+                        : "border border-transparent px-2 py-1 align-top break-words"
                     }
                   >
                     {cell}
