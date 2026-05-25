@@ -100,6 +100,10 @@ def _vision_model() -> str:
     return os.environ.get("VITEGRID_VISION_MODEL", os.environ.get("GEMMA_MODEL", "gemma-4"))
 
 
+def _generation_model() -> str:
+    return os.environ.get("VITEGRID_GENERATION_MODEL", os.environ.get("GEMMA_MODEL", "gemma-4"))
+
+
 _DROP_KEYS = {"additionalProperties", "title", "$defs", "$schema"}
 
 
@@ -333,7 +337,7 @@ def agent2_style_evaluate(image_path: str | Path) -> StyleProfile:
     mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
     response = _call_with_retry(
         _core_client(),
-        model=_core_model(),
+        model=_vision_model(),
         contents=[
             _AGENT2_PROMPT,
             genai_types.Part.from_bytes(data=image_bytes, mime_type=mime),
@@ -386,7 +390,7 @@ def agent3_generate_from_prompt(user_goal: str, patch_directive: str | None = No
     config.temperature = 0.5
     response = _call_with_retry(
         _core_client(),
-        model=_core_model(),
+        model=_generation_model(),
         contents=parts,
         config=config,
     )
@@ -1028,7 +1032,7 @@ def agent6_chat(layout: DocumentLayout, history: list[ChatTurn], user_message: s
     config.temperature = 0.3
     response = _call_with_retry(
         _core_client(),
-        model=_core_model(),
+        model=_generation_model(),
         contents=[_AGENT6_PROMPT, payload],
         config=config,
     )

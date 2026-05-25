@@ -205,7 +205,7 @@ def refine_text(req: RefineRequest) -> RefineResponse:
     )
     response = agent._call_with_retry(  # type: ignore[attr-defined]
         agent._core_client(),  # type: ignore[attr-defined]
-        model=agent._core_model(),  # type: ignore[attr-defined]
+        model=agent._generation_model(),  # type: ignore[attr-defined]
         contents=[prompt],
     )
     rewritten = (getattr(response, "text", None) or "").strip()
