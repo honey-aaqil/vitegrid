@@ -1,0 +1,7 @@
+{
+  "venvPath": "d:\\vitegrid\\vitegrid-backend",
+  "venv": ".venv",
+  "extraPaths": [
+    "d:\\vitegrid\\vitegrid-backend"
+  ]
+}

@@ -949,3 +949,83 @@ def classify_pdf_layout(extraction: PdfExtraction) -> list[ClassifiedBlock]:
     if parser_version == "v2":
         return _classify_pdf_layout_v2(extraction)
     return _classify_pdf_layout_v1(extraction)
+
+
+# ---------------------------------------------------------------------------
+# Headless Screenshot Engine
+# ---------------------------------------------------------------------------
+
+
+def render_layout_screenshot(layout_json_str: str, output_path: Path, width: int = 816, height: int = 1056):
+    """
+    Launches headless Chromium, loads the unbordered layout canvas route,
+    and isolates the production container view to a raw PNG image.
+    """
+    import base64
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            viewport={"width": width, "height": height},
+            device_scale_factor=1
+        )
+        page = context.new_page()
+
+        # Pull dev endpoint parameters from settings strings
+        frontend_url = os.environ.get("VITEGRID_FRONTEND_URL", "http://localhost:5173")
+        page.goto(f"{frontend_url}/#/headless-preview")
+
+        # Safely pass block metrics using standard base64 data transfers
+        b64_layout = base64.b64encode(layout_json_str.encode("utf-8")).decode("utf-8")
+        page.evaluate(f"localStorage.setItem('vitegrid_headless_layout', atob('{b64_layout}'))")
+
+        page.reload()
+        page.wait_for_selector("#headless-render-canvas", timeout=5000)
+
+        canvas_element = page.query_selector("#headless-render-canvas")
+        if canvas_element:
+            canvas_element.screenshot(path=str(output_path))
+        else:
+            page.screenshot(path=str(output_path))
+
+        browser.close()
+
+
+# ---------------------------------------------------------------------------
+# Visual Regression Math Engine
+# ---------------------------------------------------------------------------
+
+
+def calculate_visual_regression(ground_truth_path: Path, candidate_path: Path, diff_output_path: Path) -> float:
+    """
+    Evaluates pixel alignment variations via grayscale difference models,
+    tints layout tracking anomalies in bright red, and returns total error percentages.
+    """
+    import cv2
+    import numpy as np
+
+    img_gt = cv2.imread(str(ground_truth_path), cv2.IMREAD_GRAYSCALE)
+    img_cand = cv2.imread(str(candidate_path), cv2.IMREAD_GRAYSCALE)
+
+    if img_gt is None or img_cand is None:
+        raise ValueError("Could not read verification image sources.")
+
+    if img_gt.shape != img_cand.shape:
+        img_cand = cv2.resize(img_cand, (img_gt.shape[1], img_gt.shape[0]))
+
+    diff = cv2.absdiff(img_gt, img_cand)
+    _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+
+    color_cand = cv2.imread(str(candidate_path))
+    if color_cand.shape[:2] != img_gt.shape[:2]:
+        color_cand = cv2.resize(color_cand, (img_gt.shape[1], img_gt.shape[0]))
+
+    # Paint misalignment vectors explicitly in BGR Red [0, 0, 255]
+    color_cand[thresh == 255] = [0, 0, 255]
+    cv2.imwrite(str(diff_output_path), color_cand)
+
+    mismatch_pixels = np.sum(thresh == 255)
+    total_pixels = img_gt.shape[0] * img_gt.shape[1]
+    return (mismatch_pixels / total_pixels) * 100
+

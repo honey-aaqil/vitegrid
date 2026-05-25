@@ -187,7 +187,7 @@ def case_missing_text() -> None:
 
 
 def case_off_page() -> None:
-    print("\n=== block off-page bounds ===")
+    print("\n=== block off-page bounds: horizontal overflow is a bug ===")
     layout = make_layout([
         DocumentBlock(
             id="overflow",
@@ -200,6 +200,86 @@ def case_off_page() -> None:
     r = audit_layout_programmatic(layout)
     expect("not approved", not r.approved)
     expect("right-edge issue surfaced", any("right edge" in i for i in r.layout_issues))
+
+
+def case_filter_strips_llm_bottom_edge_messages() -> None:
+    """Regression: production audits surfaced both flavors of the off-page-Y
+    false positive: the verbose LLM-generated 'Block X y_px + height_px (...)
+    exceeds page_height_px (...)' AND the terse programmatic 'block[X] extends
+    past bottom edge'. The post-filter must catch both regardless of source.
+    """
+    print("\n=== false-positive filter strips bottom-edge messages ===")
+    # Mirrors the exact strings observed in production at 2026-05-25:
+    fake_report = AuditReport(
+        approved=False,
+        missing_text=[],
+        layout_issues=[
+            # Verbose LLM-generated flavor
+            "Block block-20 y_px + height_px (1058.5) exceeds page_height_px (1056.0)",
+            "Block block-21 y_px + height_px (1092.5) exceeds page_height_px (1056.0)",
+            # Terse programmatic flavor (older release; filter must still catch it)
+            "block[block-22] extends past bottom edge",
+            "block[block-23] extends past bottom edge",
+            # A REAL issue that should survive the filter
+            "block[block-24] contrast 1.20:1 below WCAG-AA threshold 3.0",
+        ],
+        patch_instructions="...",
+    )
+    cleaned = agent._strip_bottom_edge_false_positives(fake_report)
+    expect(
+        "verbose LLM bottom-edge messages dropped",
+        not any("exceeds page_height" in i for i in cleaned.layout_issues),
+        info=str(cleaned.layout_issues),
+    )
+    expect(
+        "terse programmatic bottom-edge messages dropped",
+        not any("extends past bottom" in i for i in cleaned.layout_issues),
+        info=str(cleaned.layout_issues),
+    )
+    expect(
+        "real contrast issue survives the filter",
+        any("contrast" in i for i in cleaned.layout_issues),
+        info=str(cleaned.layout_issues),
+    )
+
+    # If the ONLY issues were false positives, the report should be approved.
+    only_false_positives = AuditReport(
+        approved=False,
+        missing_text=[],
+        layout_issues=[
+            "Block block-20 y_px + height_px (1058.5) exceeds page_height_px (1056.0)",
+            "block[block-21] extends past bottom edge",
+        ],
+        patch_instructions="fix it",
+    )
+    cleaned2 = agent._strip_bottom_edge_false_positives(only_false_positives)
+    expect("report becomes approved when no real issues remain", cleaned2.approved)
+    expect("patch_instructions cleared on approval", cleaned2.patch_instructions is None)
+
+
+def case_multi_page_bbox_is_allowed() -> None:
+    """Regression: production audit flagged block-25..block-34 as 'extends past
+    bottom edge' for a 35-block import. Word flow-paginates the .docx, so
+    vertical overflow is normal for multi-page content. The check was removed.
+    """
+    print("\n=== multi-page content is approved (no bottom-edge flag) ===")
+    # 30 paragraphs at 44px stride, like the production trace; later blocks
+    # legitimately have y > page_height_px = 1056.
+    blocks = [
+        DocumentBlock(
+            id=f"block-{i}",
+            type=BlockType.PARAGRAPH,
+            text=f"line {i}",
+            bbox=BoundingBox(x_px=72, y_px=72.0 + i * 44.0, width_px=672, height_px=40),
+            style=StyleTokens(font_size_pt=11.0, color_hex="000000", background_hex="FFFFFF"),
+        )
+        for i in range(30)
+    ]
+    layout = make_layout(blocks)
+    r = audit_layout_programmatic(layout)
+    bottom_issues = [i for i in r.layout_issues if "bottom" in i.lower()]
+    expect("no bottom-edge issues flagged", bottom_issues == [], info=str(bottom_issues))
+    expect("approved", r.approved, info=str(r.layout_issues))
 
 
 def case_merge_reports() -> None:
@@ -285,6 +365,8 @@ if __name__ == "__main__":
     case_font_bounds()
     case_missing_text()
     case_off_page()
+    case_multi_page_bbox_is_allowed()
+    case_filter_strips_llm_bottom_edge_messages()
     case_merge_reports()
     case_none_coercion_to_defaults()
     case_markdown_text_runs()

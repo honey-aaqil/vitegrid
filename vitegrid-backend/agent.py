@@ -5,12 +5,15 @@ import json
 import os
 import re
 import types
+import uuid
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin
 
 import time
+
+import pymupdf
 
 from google import genai
 from google.genai import errors as genai_errors
@@ -176,20 +179,30 @@ def _audit_client() -> genai.Client:
     return genai.Client(api_key=_require_env("GEMMA_API_KEY_AUDIT"))
 
 
+# Fallback when no model env var is set. Must be a real, currently-deployed
+# Google AI model so a missing env var doesn't 404 in production. The
+# `gemma-4` value previously hard-coded here was never a real public model.
+_DEFAULT_MODEL = "gemini-2.5-flash"
+
+
 def _core_model() -> str:
-    return os.environ.get("GEMMA_MODEL", "gemma-4")
+    return os.environ.get("GEMMA_MODEL", _DEFAULT_MODEL)
 
 
 def _audit_model() -> str:
-    return os.environ.get("GEMMA_AUDIT_MODEL", "gemma-4")
+    return os.environ.get("GEMMA_AUDIT_MODEL", _DEFAULT_MODEL)
 
 
 def _vision_model() -> str:
-    return os.environ.get("VITEGRID_VISION_MODEL", os.environ.get("GEMMA_MODEL", "gemma-4"))
+    return os.environ.get(
+        "VITEGRID_VISION_MODEL", os.environ.get("GEMMA_MODEL", _DEFAULT_MODEL)
+    )
 
 
 def _generation_model() -> str:
-    return os.environ.get("VITEGRID_GENERATION_MODEL", os.environ.get("GEMMA_MODEL", "gemma-4"))
+    return os.environ.get(
+        "VITEGRID_GENERATION_MODEL", os.environ.get("GEMMA_MODEL", _DEFAULT_MODEL)
+    )
 
 
 _DROP_KEYS = {"additionalProperties", "title", "$defs", "$schema"}
@@ -558,8 +571,18 @@ CHECK 3 (id ordering):
 
 CHECK 4 (bbox sanity):
   For each block whose bbox is NOT null: x_px>=0, y_px>=0, width_px>0,
-  height_px>0, and (x_px+width_px) <= page_width_px,
-  (y_px+height_px) <= page_height_px. Null bbox is allowed and not a failure.
+  height_px>0, and (x_px+width_px) <= page_width_px.
+
+  *** DO NOT FLAG vertical overflow. ***
+  Blocks whose y_px or (y_px + height_px) exceed page_height_px are NOT
+  bugs. The exported .docx is flow-paginated by Microsoft Word, so a
+  document with more than one page of content legitimately has many
+  blocks past page_height_px. Treat page_height_px as a hint for page-1
+  geometry only; never compare any block's y_px against it. Do not emit
+  layout_issues like "extends past bottom", "exceeds page_height_px",
+  or anything that compares y_px to page_height_px. Multi-page is normal.
+
+  Null bbox is allowed and not a failure.
 
 CHECK 5 (heading presence on imports):
   If source markdown contains lines starting with '#', layout must have at
@@ -685,8 +708,10 @@ def audit_layout_programmatic(
                 issues.append(f"block[{b1.id}] bbox starts off-page")
             if b1.bbox.x_px + b1.bbox.width_px > layout.page_width_px + 0.5:
                 issues.append(f"block[{b1.id}] extends past right edge")
-            if b1.bbox.y_px + b1.bbox.height_px > layout.page_height_px + 0.5:
-                issues.append(f"block[{b1.id}] extends past bottom edge")
+            # No vertical-edge check: OpenXML flow-paginates the rendered .docx
+            # automatically, so a layout with more than one page of content
+            # legitimately has blocks with y_px > page_height_px. Horizontal
+            # overflow (above) IS a real bug because page width is fixed.
 
         if b1.style.font_size_pt is not None and (
             b1.style.font_size_pt < min_font_pt or b1.style.font_size_pt > max_font_pt
@@ -733,6 +758,45 @@ def audit_layout_programmatic(
     )
 
 
+# Patterns that flag vertical-overflow false positives. The exported .docx is
+# flow-paginated by Word, so blocks with y_px > page_height_px are legitimate
+# multi-page content, not bugs. The LLM auditor occasionally hallucinates this
+# check even when the prompt forbids it, so we strip the messages here too.
+_BOTTOM_EDGE_FALSE_POSITIVE_PATTERNS = (
+    "extends past bottom",
+    "past bottom edge",
+    "exceeds page_height",
+    "exceeds page height",
+    "y_px + height_px",
+    "below page_height",
+    "below page height",
+    "outside page bounds (bottom",
+)
+
+
+def _is_bottom_edge_false_positive(issue: str) -> bool:
+    lower = issue.lower()
+    return any(p in lower for p in _BOTTOM_EDGE_FALSE_POSITIVE_PATTERNS)
+
+
+def _strip_bottom_edge_false_positives(report: AuditReport) -> AuditReport:
+    """Drop bottom-edge / page-height issues from any audit report.
+
+    Vertical overflow is normal for multi-page imports. If filtering leaves
+    no issues and no missing text, the report is marked approved.
+    """
+    kept_issues = [i for i in report.layout_issues if not _is_bottom_edge_false_positive(i)]
+    if len(kept_issues) == len(report.layout_issues):
+        return report
+    approved = not kept_issues and not report.missing_text
+    return AuditReport(
+        approved=approved,
+        missing_text=list(report.missing_text),
+        layout_issues=kept_issues,
+        patch_instructions=None if approved else report.patch_instructions,
+    )
+
+
 def _merge_reports(*reports: AuditReport) -> AuditReport:
     if not reports:
         return AuditReport(approved=True)
@@ -772,7 +836,10 @@ def _combined_audit(
 ) -> AuditReport:
     llm = agent4_audit(source_payload, layout)
     prog = audit_layout_programmatic(layout, source_text_runs)
-    return _merge_reports(llm, prog)
+    merged = _merge_reports(llm, prog)
+    # Defense in depth: the LLM auditor occasionally invents the off-page-Y
+    # check even when the prompt forbids it. Strip those false positives.
+    return _strip_bottom_edge_false_positives(merged)
 
 
 def _estimate_block_height(block: DocumentBlock, content_width: float) -> float:
@@ -1494,3 +1561,165 @@ def agent6_chat(layout: DocumentLayout, history: list[ChatTurn], user_message: s
     if isinstance(result, ChatResponse) and result.updated_layout is not None:
         result.updated_layout = auto_layout(result.updated_layout)
     return result  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Critic-Refiner Agent System (Visual Regression Closed-Loop)
+# ---------------------------------------------------------------------------
+
+class BlockStylePatch(BaseModel):
+    block_id: str = Field(description="The exact identifier of the target block being modified (e.g., 'block-0').")
+    font_size_change_pt: float | None = Field(default=None, description="Delta to apply to the font point size parameter.")
+    align_patch: Literal["left", "center", "right", "justify"] | None = Field(default=None, description="Correct block text justifications.")
+    font_weight_patch: Literal["normal", "bold"] | None = Field(default=None, description="Toggle font weights to adjust text density.")
+    margin_top_shift_px: int | None = Field(default=None, description="Adjust block vertical offset to fix layout drift.")
+
+
+class LayoutRefinementPatches(BaseModel):
+    diagnostics: str = Field(description="A concise summary identifying visual alignment or text break discrepancies.")
+    patches: list[BlockStylePatch] = Field(default_factory=list, description="An array of style updates to correct layout errors.")
+
+
+_REFINER_PROMPT = """You are Agent 5: the Senior Typography Specialist for Vitegrid.
+
+You receive:
+1. A ground-truth reference profile image of the target layout.
+2. A current web preview canvas screenshot of the active schema metrics.
+3. A visual diff overlay image where typographical anomalies are painted in bright RED.
+4. The underlying DocumentLayout structural JSON schema.
+
+Examine column boundaries, font sizes, line wrapping points, and alignment deviations.
+Produce a structured LayoutRefinementPatches object adjusting only element style tokens.
+Do not rewrite content words, drop block containers, or change node tracking indexes."""
+
+
+def agent_refine_layout_schema(
+    gt_bytes: bytes,
+    cand_bytes: bytes,
+    diff_bytes: bytes,
+    current_layout: DocumentLayout,
+) -> LayoutRefinementPatches:
+    """
+    Submits layout screenshot assets alongside the current block JSON
+    to the vision model to compute highly accurate style fixes.
+    """
+    contents = [
+        _REFINER_PROMPT,
+        f"Active Model Layout State Matrix:\n{current_layout.model_dump_json()}",
+        genai_types.Part.from_bytes(data=gt_bytes, mime_type="image/png"),
+        genai_types.Part.from_bytes(data=cand_bytes, mime_type="image/png"),
+        genai_types.Part.from_bytes(data=diff_bytes, mime_type="image/png"),
+    ]
+    response = _call_with_retry(
+        _core_client(),
+        model=_vision_model(),
+        contents=contents,
+        config=_json_config(LayoutRefinementPatches),
+    )
+    return _parse_response(response, LayoutRefinementPatches)  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Closed-Loop Optimization Controller
+# ---------------------------------------------------------------------------
+
+
+def optimize_template_closed_loop(
+    initial_layout: DocumentLayout,
+    ground_truth_pdf_path: Path,
+    max_iterations: int = 4,
+    target_threshold: float = 0.5,
+) -> DocumentLayout:
+    """
+    Runs an iterative, self-correcting validation loop that adjusts template layout
+    and styling parameters dynamically until layout variance drops below the target threshold.
+
+    Gracefully degrades when the optional rendering dependencies (Playwright /
+    OpenCV) are not installed: returns the initial layout unchanged so the
+    request pipeline still completes.
+    """
+    try:
+        from parser import render_layout_screenshot, calculate_visual_regression
+    except ImportError as exc:
+        print(f"[Closed-Loop] rendering dependencies unavailable: {exc}")
+        return initial_layout
+
+    current_layout = copy.deepcopy(initial_layout)
+    work_dir = ground_truth_pdf_path.parent / f"closed_loop_{uuid.uuid4().hex}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    # Rasterize baseline target to matching 96 DPI pixel arrays
+    gt_image_path = work_dir / "ground_truth_base.png"
+    try:
+        doc = pymupdf.open(str(ground_truth_pdf_path))
+        pix = doc[0].get_pixmap(matrix=pymupdf.Matrix(96 / 72.0, 96 / 72.0), alpha=False)
+        pix.save(str(gt_image_path))
+        doc.close()
+    except Exception as err:
+        print(f"[Closed-Loop] ground-truth rasterization failed: {err}")
+        return initial_layout
+
+    gt_bytes = gt_image_path.read_bytes()
+
+    for iteration in range(max_iterations):
+        cand_path = work_dir / f"candidate_iter_{iteration}.png"
+        diff_path = work_dir / f"diff_mask_{iteration}.png"
+
+        # Step A: Capture the visual layout preview screenshot
+        try:
+            render_layout_screenshot(
+                current_layout.model_dump_json(),
+                cand_path,
+                width=int(current_layout.page_width_px),
+                height=int(current_layout.page_height_px),
+            )
+        except Exception as err:
+            print(f"[Closed-Loop] iter {iteration} render failed: {err}")
+            break
+
+        if not cand_path.exists():
+            break
+
+        # Step B: Perform image regression matching
+        try:
+            error_score = calculate_visual_regression(gt_image_path, cand_path, diff_path)
+            print(f"[Closed-Loop Tracking] Iteration {iteration} Layout Error: {error_score:.4f}%")
+        except Exception as err:
+            print(f"[Closed-Loop Anomalies] Visual check bypassed: {err}")
+            break
+
+        # Step C: Break execution when matching rules hit verification bounds
+        if error_score <= target_threshold:
+            print("[Closed-Loop Status] Verified template convergence achieved.")
+            break
+
+        # Step D: Submit delta images to Critic-Refiner optimization
+        cand_bytes = cand_path.read_bytes()
+        diff_bytes = diff_path.read_bytes()
+        try:
+            patch_report = agent_refine_layout_schema(gt_bytes, cand_bytes, diff_bytes, current_layout)
+        except Exception as err:
+            print(f"[Closed-Loop Status] Prompt sequence dropped: {err}")
+            break
+
+        # Step E: Apply precision schema structural changes
+        block_map = {b.id: b for b in current_layout.blocks}
+        for patch in patch_report.patches:
+            if patch.block_id in block_map:
+                target_block = block_map[patch.block_id]
+                if patch.font_size_change_pt is not None and target_block.style.font_size_pt is not None:
+                    target_block.style.font_size_pt = round(
+                        target_block.style.font_size_pt + patch.font_size_change_pt, 1
+                    )
+                if patch.align_patch is not None:
+                    target_block.style.align = patch.align_patch
+                if patch.font_weight_patch is not None:
+                    target_block.style.font_weight = patch.font_weight_patch
+                if patch.margin_top_shift_px is not None and target_block.bbox is not None:
+                    target_block.bbox.y_px = float(target_block.bbox.y_px + patch.margin_top_shift_px)
+
+        # Step F: Force a geometric auto-layout normalization pass
+        current_layout = auto_layout(current_layout)
+
+    return current_layout
+

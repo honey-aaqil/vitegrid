@@ -3,6 +3,7 @@ import { useEffect, useReducer, useState } from "react";
 import { saveTemplate } from "./api";
 import { ChatEditor, type ChatTurn } from "./components/ChatEditor";
 import { Dashboard } from "./components/Dashboard";
+import HeadlessPreview from "./components/HeadlessPreview";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { LiveRender } from "./components/LiveRender";
 import { TextEditor } from "./components/TextEditor";
@@ -32,6 +33,11 @@ function isImage(url: string) {
 }
 
 export default function App() {
+  // Headless preview route — renders clean canvas without workspace chrome
+  if (window.location.hash === "#/headless-preview") {
+    return <HeadlessPreview />;
+  }
+
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [state, dispatch] = useReducer(editorReducer, EMPTY_LAYOUT, initEditorState);
   const [chatHistory, setChatHistory] = useState<ChatTurn[]>([]);

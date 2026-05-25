@@ -155,6 +155,26 @@ async def import_layout(
             layout, report = agent.import_from_classified_blocks(
                 classified, page_w, page_h, len(extraction.pages)
             )
+            # Route through closed-loop visual optimization engine
+            layout = agent.optimize_template_closed_loop(
+                initial_layout=layout,
+                ground_truth_pdf_path=doc_path,
+                max_iterations=4,
+                target_threshold=0.45,
+            )
+        elif pipeline == "closedloop":
+            classified = docparser.classify_pdf_layout(extraction)
+            page_w = extraction.pages[0].page_width_pt if extraction.pages else 612.0
+            page_h = extraction.pages[0].page_height_pt if extraction.pages else 792.0
+            layout, report = agent.import_from_classified_blocks(
+                classified, page_w, page_h, len(extraction.pages)
+            )
+            layout = agent.optimize_template_closed_loop(
+                initial_layout=layout,
+                ground_truth_pdf_path=doc_path,
+                max_iterations=4,
+                target_threshold=0.45,
+            )
         else:
             layout, report = agent.ensemble_pdf_import(extraction)
     elif doc_path.suffix.lower() == ".docx":
