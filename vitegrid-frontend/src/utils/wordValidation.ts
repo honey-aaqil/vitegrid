@@ -3,7 +3,7 @@
  * Provides pixel-perfect comparison and automated metrics for Word document rendering
  */
 
-import type { DocumentLayout, DocumentBlock } from "../types";
+import type { DocumentLayout } from "../types";
 
 export interface ValidationMetrics {
   text_coverage_percent: number;
@@ -180,8 +180,8 @@ export const MANUAL_REVIEW_CHECKLIST = [
  */
 export async function compareRenderToWord(
   liveRenderCanvas: HTMLCanvasElement,
-  wordScreenshot: HTMLImageElement,
-  tolerancePercent: number = 2.0
+  _wordScreenshot?: HTMLImageElement,
+  _tolerancePercent?: number
 ): Promise<PixelComparisonResult> {
   const ctx = liveRenderCanvas.getContext("2d");
   if (!ctx) throw new Error("Could not get canvas context");

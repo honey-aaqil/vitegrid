@@ -21,7 +21,7 @@ function styleToCss(block: DocumentBlock): React.CSSProperties {
     colorValue = "#000000";
   }
 
-  let bgColor = s.background_hex;
+  let bgColor: string | undefined = s.background_hex ?? undefined;
   if (bgColor && bgColor !== "FFFFFF" && bgColor !== "#FFFFFF") {
     if (!bgColor.startsWith("#")) {
       bgColor = `#${bgColor}`;
@@ -32,7 +32,7 @@ function styleToCss(block: DocumentBlock): React.CSSProperties {
 
   return {
     color: colorValue,
-    backgroundColor: bgColor,
+    backgroundColor: bgColor || undefined,
     textAlign: s.align,
     fontFamily: s.font_family,
     fontSize: s.font_size_pt ? `${s.font_size_pt}pt` : undefined,
@@ -47,12 +47,30 @@ function styleToCss(block: DocumentBlock): React.CSSProperties {
   };
 }
 
-function RenderedBlock({ block, index, totalBlocks }: { block: DocumentBlock; index: number; totalBlocks: number }) {
+function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }) {
   const css = styleToCss(block);
   const margin_top = index === 0 ? 0 : block.spacing.before_px ?? 0;
   const margin_bottom = block.spacing.after_px ?? 0;
 
-  switch (block.type) {
+  // DETECT ABSOLUTE GEOMETRY ANCHORS
+  const hasAbsoluteGeometry = !!(block.bbox && block.bbox.width_px > 0 && block.bbox.height_px > 0);
+
+  const wrapperStyle: React.CSSProperties = hasAbsoluteGeometry ? {
+    position: "absolute",
+    left: `${block.bbox!.x_px}px`,
+    top: `${block.bbox!.y_px}px`,
+    width: `${block.bbox!.width_px}px`,
+    height: `${block.bbox!.height_px}px`,
+    margin: 0,
+    boxSizing: "border-box",
+    overflow: "hidden",
+  } : {
+    marginTop: margin_top,
+    marginBottom: margin_bottom,
+  };
+
+  const renderInnerContent = () => {
+    switch (block.type) {
     case "heading":
       return (
         <h2 style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom }}>
@@ -104,7 +122,7 @@ function RenderedBlock({ block, index, totalBlocks }: { block: DocumentBlock; in
         right: defaultCellPadding.right * DXA_TO_PX,
       };
 
-      const tableRows = block.table_cells || (block.rows?.map((row) => row.map((text) => ({ text }))) ?? []);
+      const tableRows = block.table_cells || (block.rows?.map((row) => row.map((text) => ({ text, col_span: 1, row_span: 1, padding_top_px: 8, padding_bottom_px: 8, padding_left_px: 12, padding_right_px: 12, vertical_align: "top" as const }))) ?? []);
 
       return (
         <table style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom, width: "100%", borderCollapse: "collapse" }}>
@@ -172,7 +190,10 @@ function RenderedBlock({ block, index, totalBlocks }: { block: DocumentBlock; in
         </div>
       );
     }
-  }
+    }
+  };
+
+  return <div style={wrapperStyle}>{renderInnerContent()}</div>;
 }
 
 export function LiveRender({ layout, blocks }: Props) {
@@ -209,6 +230,9 @@ export function LiveRender({ layout, blocks }: Props) {
         >
           <div
             style={{
+              position: "relative",
+              width: "100%",
+              minHeight: layout.page_height_px,
               paddingTop: layout.margin_px.top,
               paddingRight: layout.margin_px.right,
               paddingBottom: layout.margin_px.bottom,
@@ -216,7 +240,7 @@ export function LiveRender({ layout, blocks }: Props) {
             }}
           >
             {blocks.map((block, index) => (
-              <RenderedBlock key={block.id} block={block} index={index} totalBlocks={blocks.length} />
+              <RenderedBlock key={block.id} block={block} index={index} />
             ))}
             {blocks.length === 0 && (
               <p style={{ paddingTop: "48px", paddingBottom: "48px", textAlign: "center", fontSize: "14px", color: "rgba(0,0,0,0.4)" }}>Empty document</p>

@@ -460,13 +460,42 @@ async def stream_document_reconstruction(
                                 gt_bytes, cand_bytes, diff_bytes, current_layout
                             )
                             block_map = {b.id: b for b in current_layout.blocks}
+
+                            # Apply the layout patches back to the block bounding boxes
                             for patch in patch_report.patches:
                                 if patch.element_id in block_map:
                                     target_block = block_map[patch.element_id]
+
+                                    # 1. Apply Typographical Overrides
                                     if patch.font_size_pt and patch.font_size_pt != 11.0:
                                         target_block.style.font_size_pt = patch.font_size_pt
                                     if patch.text_align:
                                         target_block.style.align = patch.text_align
+                                    if patch.line_height_multiplier and patch.line_height_multiplier > 1.0:
+                                        target_block.spacing.line_height_px = target_block.style.font_size_pt * patch.line_height_multiplier
+
+                                    # 2. Apply Background and Canvas Visual Shading
+                                    if patch.background_color_rgba and patch.background_color_rgba != "rgba(0,0,0,0)":
+                                        target_block.style.background_hex = patch.background_color_rgba
+
+                                    # 3. Apply Absolute Spatial Bounding Updates to match Input Imagery
+                                    if target_block.bbox:
+                                        # Adjust positions dynamically based on red mask shift calculations
+                                        if patch.margin and patch.margin.top_px != 0:
+                                            target_block.bbox.y_px += patch.margin.top_px
+                                        if patch.margin and patch.margin.left_px != 0:
+                                            target_block.bbox.x_px += patch.margin.left_px
+
+                                        # Apply absolute dimension adjustments
+                                        if patch.top_px_offset is not None:
+                                            target_block.bbox.y_px = patch.top_px_offset
+                                        if patch.left_px_offset is not None:
+                                            target_block.bbox.x_px = patch.left_px_offset
+                                        if patch.width_pct and patch.width_pct > 0:
+                                            target_block.bbox.width_px = (patch.width_pct / 100.0) * current_layout.page_width_px
+                                        if patch.height_px_offset != 0:
+                                            target_block.bbox.height_px += patch.height_px_offset
+
                             current_layout = agent.auto_layout(current_layout)
                         except Exception as e:
                             return f"Patch application failed: {e}"
