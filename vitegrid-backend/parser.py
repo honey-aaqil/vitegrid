@@ -407,7 +407,14 @@ class DocxBlock:
     color_hex: str | None
     bold: bool
     italic: bool
-    align: str | None
+    underline: str = "none"
+    underline_color: str | None = None
+    strikethrough: bool = False
+    align: str | None = None
+    before_dxa: int = 0
+    after_dxa: int = 0
+    line_spacing_dxa: int = 240
+    line_rule: str = "auto"
 
 
 def _docx_color(color: RGBColor | None) -> str | None:
@@ -430,6 +437,48 @@ def _docx_alignment(value: Any) -> str | None:
             return "justify"
         return name
     return None
+
+
+def _docx_underline(run: Any) -> tuple[str, str | None]:
+    if not run.font.underline:
+        return ("none", None)
+    underline_type = "single"
+    if run.font.underline is True:
+        underline_type = "single"
+    else:
+        ul_name = str(run.font.underline).split(".")[-1].lower()
+        if "double" in ul_name:
+            underline_type = "double"
+        elif "single" not in ul_name:
+            underline_type = "single"
+    underline_color = None
+    if hasattr(run.font, "underline_color") and run.font.underline_color:
+        underline_color = _docx_color(run.font.underline_color.rgb)
+    return (underline_type, underline_color)
+
+
+def _docx_strikethrough(run: Any) -> bool:
+    return bool(run.font.strike) if run.font.strike is not None else False
+
+
+def _docx_spacing_dxa(para: Any) -> tuple[int, int, int, str]:
+    before_dxa = 0
+    after_dxa = 0
+    line_spacing_dxa = 240
+    line_rule = "auto"
+
+    if para.paragraph_format:
+        pf = para.paragraph_format
+        if pf.space_before and hasattr(pf.space_before, "pt"):
+            before_dxa = int(pf.space_before.pt * 20)
+        if pf.space_after and hasattr(pf.space_after, "pt"):
+            after_dxa = int(pf.space_after.pt * 20)
+        if pf.line_spacing:
+            if isinstance(pf.line_spacing, (int, float)):
+                line_spacing_dxa = int(pf.line_spacing * 20) if pf.line_spacing < 100 else int(pf.line_spacing)
+            line_rule = str(pf.line_rule).split(".")[-1].lower() if pf.line_rule else "auto"
+
+    return (before_dxa, after_dxa, line_spacing_dxa, line_rule)
 
 
 def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
@@ -455,7 +504,14 @@ def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
                     color_hex=pending_list_meta.get("color_hex"),
                     bold=pending_list_meta.get("bold", False),
                     italic=pending_list_meta.get("italic", False),
+                    underline=pending_list_meta.get("underline", "none"),
+                    underline_color=pending_list_meta.get("underline_color"),
+                    strikethrough=pending_list_meta.get("strikethrough", False),
                     align=pending_list_meta.get("align"),
+                    before_dxa=pending_list_meta.get("before_dxa", 0),
+                    after_dxa=pending_list_meta.get("after_dxa", 0),
+                    line_spacing_dxa=pending_list_meta.get("line_spacing_dxa", 240),
+                    line_rule=pending_list_meta.get("line_rule", "auto"),
                 )
             )
         pending_list.clear()
@@ -470,7 +526,10 @@ def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
         color_hex = _docx_color(first_run.font.color.rgb) if first_run and first_run.font.color else None
         bold = bool(first_run.bold) if first_run and first_run.bold is not None else "bold" in style_name
         italic = bool(first_run.italic) if first_run and first_run.italic is not None else False
+        underline, underline_color = _docx_underline(first_run) if first_run else ("none", None)
+        strikethrough = _docx_strikethrough(first_run) if first_run else False
         align = _docx_alignment(para.alignment)
+        before_dxa, after_dxa, line_spacing_dxa, line_rule = _docx_spacing_dxa(para)
 
         is_list_item = "list" in style_name or "bullet" in style_name
         if is_list_item and text:
@@ -482,7 +541,14 @@ def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
                     "color_hex": color_hex,
                     "bold": bold,
                     "italic": italic,
+                    "underline": underline,
+                    "underline_color": underline_color,
+                    "strikethrough": strikethrough,
                     "align": align,
+                    "before_dxa": before_dxa,
+                    "after_dxa": after_dxa,
+                    "line_spacing_dxa": line_spacing_dxa,
+                    "line_rule": line_rule,
                 }
             continue
 
@@ -502,7 +568,14 @@ def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
                     color_hex=color_hex,
                     bold=True if bold is None else bold,
                     italic=italic,
+                    underline=underline,
+                    underline_color=underline_color,
+                    strikethrough=strikethrough,
                     align=align,
+                    before_dxa=before_dxa,
+                    after_dxa=after_dxa,
+                    line_spacing_dxa=line_spacing_dxa,
+                    line_rule=line_rule,
                 )
             )
         else:
@@ -517,7 +590,14 @@ def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
                     color_hex=color_hex,
                     bold=bold,
                     italic=italic,
+                    underline=underline,
+                    underline_color=underline_color,
+                    strikethrough=strikethrough,
                     align=align,
+                    before_dxa=before_dxa,
+                    after_dxa=after_dxa,
+                    line_spacing_dxa=line_spacing_dxa,
+                    line_rule=line_rule,
                 )
             )
 

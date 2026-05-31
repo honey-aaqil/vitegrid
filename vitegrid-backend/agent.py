@@ -74,8 +74,13 @@ def _default_margin_px() -> dict[str, float]:
 class SpacingTokens(BaseModel):
     before_dxa: int = Field(default=0, description="Paragraph spacing before in twips/dxa.")
     after_dxa: int = Field(default=0, description="Paragraph spacing after in twips/dxa.")
+    before_px: float = Field(default=0.0, description="Paragraph spacing before in pixels (converted from DXA).")
+    after_px: float = Field(default=0.0, description="Paragraph spacing after in pixels (converted from DXA).")
     line_spacing_dxa: int = Field(
         default=240, description="Exact line spacing in twips (240 twips = 12pt)."
+    )
+    line_height_px: float | None = Field(
+        default=None, description="Line height in pixels (converted from DXA)."
     )
     line_rule: Literal["auto", "exact", "atLeast"] = Field(
         default="auto", description="Line spacing rule: auto, exact, atLeast."
@@ -93,12 +98,29 @@ class StyleTokens(BaseModel):
     font_weight: Literal["normal", "bold"] = Field(
         default="normal", description="Font weight: normal or bold."
     )
+    italic: bool = Field(default=False, description="Italic text style.")
+    underline: Literal["none", "single", "double"] = Field(
+        default="none", description="Underline style: none, single, double."
+    )
+    underline_color_rgba: str | None = Field(
+        default=None, description="Underline color in RGBA hex format."
+    )
+    strikethrough: bool = Field(default=False, description="Strikethrough text decoration.")
     color_hex: str = Field(default="000000", description="RGB hexadecimal text color.")
     background_hex: str | None = Field(
         default="FFFFFF", description="Shading RGB hexadecimal fill or None for transparent."
     )
     align: Literal["left", "center", "right", "justify"] = Field(
         default="left", description="Alignment: left, center, right, justify."
+    )
+    line_height_px: float | None = Field(
+        default=None, description="Explicit line height in pixels (converted from DXA)."
+    )
+    letter_spacing_px: float = Field(
+        default=0.0, description="Letter spacing in pixels."
+    )
+    word_spacing_px: float = Field(
+        default=0.0, description="Word spacing in pixels."
     )
     border_visible: bool = Field(default=True, description="Whether structural borders are displayed.")
     cell_padding_dxa: dict[str, int] = Field(
@@ -1559,16 +1581,32 @@ def import_from_classified_blocks(
 
 
 def import_from_docx_blocks(docx_blocks: list[Any]) -> tuple[DocumentLayout, AuditReport]:
+    DXA_TO_PX = 96 / 1440
     blocks: list[DocumentBlock] = []
     for i, b in enumerate(docx_blocks):
         style = StyleTokens(
-            font_family=b.font,
-            font_size_pt=b.size_pt,
+            font_family=b.font or "Arial",
+            font_size_pt=b.size_pt or 11.0,
             font_weight="bold" if b.bold else "normal",
-            color_hex=b.color_hex,
-            align=b.align,
+            italic=getattr(b, 'italic', False),
+            underline=getattr(b, 'underline', 'none'),
+            underline_color_rgba=getattr(b, 'underline_color', None),
+            strikethrough=getattr(b, 'strikethrough', False),
+            color_hex=b.color_hex or "000000",
+            align=b.align or "left",
             border_visible=True if b.type == "table" else None,
         )
+        spacing = SpacingTokens(
+            before_dxa=getattr(b, 'before_dxa', 0),
+            after_dxa=getattr(b, 'after_dxa', 0),
+            line_spacing_dxa=getattr(b, 'line_spacing_dxa', 240),
+            line_rule=getattr(b, 'line_rule', 'auto'),
+        )
+        spacing.before_px = spacing.before_dxa * DXA_TO_PX
+        spacing.after_px = spacing.after_dxa * DXA_TO_PX
+        if spacing.line_rule == "exact":
+            spacing.line_height_px = spacing.line_spacing_dxa * DXA_TO_PX
+
         block_type = BlockType(b.type)
         blocks.append(
             DocumentBlock(
@@ -1578,6 +1616,7 @@ def import_from_docx_blocks(docx_blocks: list[Any]) -> tuple[DocumentLayout, Aud
                 items=b.items,
                 rows=b.rows,
                 style=style,
+                spacing=spacing,
             )
         )
     first_heading = next(

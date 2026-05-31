@@ -26,9 +26,16 @@ export interface StyleTokens {
   font_family: string;
   font_size_pt: number;
   font_weight: FontWeight;
+  italic?: boolean;
+  underline?: "none" | "single" | "double";
+  underline_color_rgba?: string | null;
+  strikethrough?: boolean;
   color_hex: string;
   background_hex: string | null;
   align: Align;
+  line_height_px?: number | null;
+  letter_spacing_px?: number;
+  word_spacing_px?: number;
   border_visible: boolean;
   cell_padding_dxa: CellPaddingDxa;
   list_format: ListFormat;
@@ -38,7 +45,10 @@ export interface StyleTokens {
 export interface SpacingTokens {
   before_dxa: number;
   after_dxa: number;
+  before_px?: number;
+  after_px?: number;
   line_spacing_dxa: number;
+  line_height_px?: number | null;
   line_rule: LineRule;
 }
 
@@ -82,9 +92,15 @@ export const DEFAULT_STYLE_TOKENS: StyleTokens = {
   font_family: "Arial",
   font_size_pt: 11.0,
   font_weight: "normal",
+  italic: false,
+  underline: "none",
+  strikethrough: false,
   color_hex: "000000",
   background_hex: "FFFFFF",
   align: "left",
+  line_height_px: undefined,
+  letter_spacing_px: 0,
+  word_spacing_px: 0,
   border_visible: true,
   cell_padding_dxa: { top: 120, bottom: 120, left: 180, right: 180 },
   list_format: "bullet",
@@ -94,6 +110,8 @@ export const DEFAULT_STYLE_TOKENS: StyleTokens = {
 export const DEFAULT_SPACING_TOKENS: SpacingTokens = {
   before_dxa: 0,
   after_dxa: 0,
+  before_px: 0,
+  after_px: 0,
   line_spacing_dxa: 240,
   line_rule: "auto",
 };

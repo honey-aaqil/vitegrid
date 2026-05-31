@@ -7,8 +7,11 @@ interface Props {
   blocks: DocumentBlock[];
 }
 
+const DXA_TO_PX = 96 / 1440;
+
 function styleToCss(block: DocumentBlock): React.CSSProperties {
   const s = block.style;
+  const textDecorationLine = s.strikethrough ? "line-through" : s.underline !== "none" ? "underline" : undefined;
   return {
     color: s.color_hex,
     backgroundColor: s.background_hex ?? undefined,
@@ -16,46 +19,67 @@ function styleToCss(block: DocumentBlock): React.CSSProperties {
     fontFamily: s.font_family,
     fontSize: s.font_size_pt ? `${s.font_size_pt}pt` : undefined,
     fontWeight: s.font_weight,
+    fontStyle: s.italic ? "italic" : "normal",
+    textDecoration: textDecorationLine,
+    textDecorationColor: s.underline_color_rgba ? s.underline_color_rgba : undefined,
+    lineHeight: block.spacing.line_height_px ? `${block.spacing.line_height_px}px` : undefined,
+    letterSpacing: s.letter_spacing_px ? `${s.letter_spacing_px}px` : undefined,
+    wordSpacing: s.word_spacing_px ? `${s.word_spacing_px}px` : undefined,
+    whiteSpace: "pre-wrap",
   };
 }
 
-function RenderedBlock({ block }: { block: DocumentBlock }) {
+function RenderedBlock({ block, index, totalBlocks }: { block: DocumentBlock; index: number; totalBlocks: number }) {
   const css = styleToCss(block);
+  const margin_top = index === 0 ? 0 : block.spacing.before_px ?? 0;
+  const margin_bottom = block.spacing.after_px ?? 0;
+
   switch (block.type) {
     case "heading":
       return (
-        <h2 style={css} className="m-0">
+        <h2 style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom }}>
           {block.text}
         </h2>
       );
     case "paragraph":
       return (
-        <p style={css} className="m-0 whitespace-pre-wrap">
+        <p style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom }}>
           {block.text}
         </p>
       );
     case "list":
       return (
-        <ul style={css} className="m-0 list-disc pl-6">
+        <ul style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom }} className="list-disc pl-6">
           {(block.items ?? []).map((item, i) => (
             <li key={i}>{item}</li>
           ))}
         </ul>
       );
     case "table":
+      const cellPadding = block.style.cell_padding_dxa || { top: 120, bottom: 120, left: 180, right: 180 };
+      const cellPaddingPx = {
+        top: cellPadding.top * DXA_TO_PX,
+        bottom: cellPadding.bottom * DXA_TO_PX,
+        left: cellPadding.left * DXA_TO_PX,
+        right: cellPadding.right * DXA_TO_PX,
+      };
       return (
-        <table style={css} className="w-full border-collapse">
+        <table style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom, width: "100%" }} className="border-collapse">
           <tbody>
             {(block.rows ?? []).map((row, r) => (
               <tr key={r}>
                 {row.map((cell, c) => (
                   <td
                     key={c}
-                    className={
-                      block.style.border_visible === true
-                        ? "border border-black/40 px-2 py-1 align-top break-words"
-                        : "border border-transparent px-2 py-1 align-top break-words"
-                    }
+                    style={{
+                      border: block.style.border_visible ? "1px solid rgba(0,0,0,0.25)" : "1px solid transparent",
+                      paddingTop: cellPaddingPx.top,
+                      paddingBottom: cellPaddingPx.bottom,
+                      paddingLeft: cellPaddingPx.left,
+                      paddingRight: cellPaddingPx.right,
+                      verticalAlign: "top",
+                      wordBreak: "break-word",
+                    }}
                   >
                     {cell}
                   </td>
@@ -67,11 +91,20 @@ function RenderedBlock({ block }: { block: DocumentBlock }) {
       );
     case "image_placeholder":
       return (
-        <div style={css}>
+        <div style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom }}>
           {block.image_ref ? (
-            <img src={block.image_ref} alt="" className="max-w-full" />
+            <img src={block.image_ref} alt="" style={{ maxWidth: "100%" }} />
           ) : (
-            <div className="flex h-32 items-center justify-center rounded border border-dashed border-black/30 text-xs text-black/40">
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              height: "128px",
+              border: "2px dashed rgba(0,0,0,0.3)",
+              borderRadius: "6px",
+              fontSize: "12px",
+              color: "rgba(0,0,0,0.4)",
+            }}>
               image placeholder
             </div>
           )}
@@ -113,7 +146,6 @@ export function LiveRender({ layout, blocks }: Props) {
           }}
         >
           <div
-            className="space-y-2"
             style={{
               paddingTop: layout.margin_px.top,
               paddingRight: layout.margin_px.right,
@@ -121,11 +153,11 @@ export function LiveRender({ layout, blocks }: Props) {
               paddingLeft: layout.margin_px.left,
             }}
           >
-            {blocks.map((block) => (
-              <RenderedBlock key={block.id} block={block} />
+            {blocks.map((block, index) => (
+              <RenderedBlock key={block.id} block={block} index={index} totalBlocks={blocks.length} />
             ))}
             {blocks.length === 0 && (
-              <p className="py-12 text-center text-sm text-black/40">Empty document</p>
+              <p style={{ paddingTop: "48px", paddingBottom: "48px", textAlign: "center", fontSize: "14px", color: "rgba(0,0,0,0.4)" }}>Empty document</p>
             )}
           </div>
         </div>
