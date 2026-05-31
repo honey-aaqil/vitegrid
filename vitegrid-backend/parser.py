@@ -1382,7 +1382,7 @@ def render_layout_screenshot(layout_json_str: str, output_path, width: int = 816
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
             viewport={"width": width, "height": height},
-            device_scale_factor=2.0,
+            device_scale_factor=1.0,  # 1:1 pixel parity with ground truth (no interpolation blur)
         )
         page = context.new_page()
 
@@ -1412,7 +1412,7 @@ def render_layout_screenshot(layout_json_str: str, output_path, width: int = 816
             context.close()
             context = browser.new_context(
                 viewport={"width": width, "height": int(actual_height)},
-                device_scale_factor=2.0,
+                device_scale_factor=1.0,  # 1:1 pixel parity with ground truth
             )
             page = context.new_page()
             page.goto(f"{frontend_url}/#/headless-preview")

@@ -498,6 +498,23 @@ async def stream_document_reconstruction(
                                         if patch.height_px_offset != 0:
                                             target_block.bbox.height_px += patch.height_px_offset
 
+                            # RE-CALIBRATE DOWNSTREAM FLOW: Reflow blocks after patches
+                            # Ensures elements shift vertically when upper blocks change height/position
+                            margin_top = current_layout.margin_px.get("top", 72.0) if isinstance(current_layout.margin_px, dict) else current_layout.margin_px.top
+                            margin_left = current_layout.margin_px.get("left", 72.0) if isinstance(current_layout.margin_px, dict) else current_layout.margin_px.left
+                            margin_right = current_layout.margin_px.get("right", 72.0) if isinstance(current_layout.margin_px, dict) else current_layout.margin_px.right
+
+                            full_width_threshold = current_layout.page_width_px - margin_left - margin_right
+                            cursor_y = float(margin_top)
+
+                            for block in current_layout.blocks:
+                                if block.bbox:
+                                    # If block is full-width (or nearly full-width), reflow it relative to cursor
+                                    if abs(block.bbox.width_px - full_width_threshold) < 2.0:
+                                        block.bbox.y_px = max(block.bbox.y_px, cursor_y)
+                                    # Update cursor for next block's potential reflow
+                                    cursor_y = max(cursor_y, block.bbox.y_px + block.bbox.height_px + 8)
+
                             current_layout = agent.auto_layout(current_layout)
                         except Exception as e:
                             return f"Patch application failed: {e}"
