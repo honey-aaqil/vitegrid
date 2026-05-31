@@ -52,6 +52,17 @@ export interface SpacingTokens {
   line_rule: LineRule;
 }
 
+export interface TableCell {
+  text: string;
+  padding_top_px?: number;
+  padding_bottom_px?: number;
+  padding_left_px?: number;
+  padding_right_px?: number;
+  vertical_align?: "top" | "center" | "bottom";
+  row_span?: number;
+  col_span?: number;
+}
+
 export interface BoundingBox {
   x_px: number;
   y_px: number;
@@ -65,6 +76,7 @@ export interface DocumentBlock {
   text?: string;
   items?: string[];
   rows?: string[][];
+  table_cells?: TableCell[][];
   image_ref?: string;
   bbox?: BoundingBox;
   style: StyleTokens;

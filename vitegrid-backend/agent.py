@@ -138,6 +138,17 @@ class StyleTokens(BaseModel):
         return _coerce_nones_to_defaults(cls, data)
 
 
+class TableCell(BaseModel):
+    text: str = Field(default="", description="Cell text content.")
+    padding_top_px: float = Field(default=8.0, description="Cell top padding in pixels.")
+    padding_bottom_px: float = Field(default=8.0, description="Cell bottom padding in pixels.")
+    padding_left_px: float = Field(default=12.0, description="Cell left padding in pixels.")
+    padding_right_px: float = Field(default=12.0, description="Cell right padding in pixels.")
+    vertical_align: Literal["top", "center", "bottom"] = Field(default="top", description="Vertical alignment.")
+    row_span: int = Field(default=1, ge=1, description="Row span for merged cells.")
+    col_span: int = Field(default=1, ge=1, description="Column span for merged cells.")
+
+
 class BoundingBox(BaseModel):
     x_px: float = Field(default=0.0, description="Web canvas coordinate x in pixels.")
     y_px: float = Field(default=0.0, description="Web canvas coordinate y in pixels.")
@@ -150,7 +161,8 @@ class DocumentBlock(BaseModel):
     type: BlockType = Field(..., description="Block structural type.")
     text: str | None = Field(default=None, description="Raw text for heading/paragraph elements.")
     items: list[str] | None = Field(default=None, description="Ordered list values for list blocks.")
-    rows: list[list[str]] | None = Field(default=None, description="2D table cells.")
+    rows: list[list[str]] | None = Field(default=None, description="2D table cells (text only).")
+    table_cells: list[list[TableCell]] | None = Field(default=None, description="2D table cells with per-cell styling.")
     image_ref: str | None = Field(default=None, description="Resource locator for graphic assets.")
     bbox: BoundingBox | None = Field(default=None, description="Canvas bounding box coordinates.")
     style: StyleTokens = Field(default_factory=StyleTokens)
@@ -1608,6 +1620,30 @@ def import_from_docx_blocks(docx_blocks: list[Any]) -> tuple[DocumentLayout, Aud
             spacing.line_height_px = spacing.line_spacing_dxa * DXA_TO_PX
 
         block_type = BlockType(b.type)
+
+        table_cells = None
+        if b.type == "table" and b.rows and getattr(b, 'table_cell_properties', None):
+            table_cells = []
+            for row_idx, row in enumerate(b.rows):
+                cell_row = []
+                for col_idx, cell_text in enumerate(row):
+                    cell_props = b.table_cell_properties[row_idx][col_idx] if row_idx < len(b.table_cell_properties) and col_idx < len(b.table_cell_properties[row_idx]) else None
+                    if cell_props:
+                        cell = TableCell(
+                            text=cell_text,
+                            padding_top_px=cell_props.padding_top_dxa * DXA_TO_PX,
+                            padding_bottom_px=cell_props.padding_bottom_dxa * DXA_TO_PX,
+                            padding_left_px=cell_props.padding_left_dxa * DXA_TO_PX,
+                            padding_right_px=cell_props.padding_right_dxa * DXA_TO_PX,
+                            vertical_align=cell_props.vertical_align,
+                            row_span=cell_props.row_span,
+                            col_span=cell_props.col_span,
+                        )
+                    else:
+                        cell = TableCell(text=cell_text)
+                    cell_row.append(cell)
+                table_cells.append(cell_row)
+
         blocks.append(
             DocumentBlock(
                 id=f"block-{i}",
@@ -1615,6 +1651,7 @@ def import_from_docx_blocks(docx_blocks: list[Any]) -> tuple[DocumentLayout, Aud
                 text=b.text,
                 items=b.items,
                 rows=b.rows,
+                table_cells=table_cells,
                 style=style,
                 spacing=spacing,
             )

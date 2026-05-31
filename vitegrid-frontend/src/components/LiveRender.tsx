@@ -55,33 +55,38 @@ function RenderedBlock({ block, index, totalBlocks }: { block: DocumentBlock; in
           ))}
         </ul>
       );
-    case "table":
-      const cellPadding = block.style.cell_padding_dxa || { top: 120, bottom: 120, left: 180, right: 180 };
-      const cellPaddingPx = {
-        top: cellPadding.top * DXA_TO_PX,
-        bottom: cellPadding.bottom * DXA_TO_PX,
-        left: cellPadding.left * DXA_TO_PX,
-        right: cellPadding.right * DXA_TO_PX,
+    case "table": {
+      const defaultCellPadding = block.style.cell_padding_dxa || { top: 120, bottom: 120, left: 180, right: 180 };
+      const defaultPaddingPx = {
+        top: defaultCellPadding.top * DXA_TO_PX,
+        bottom: defaultCellPadding.bottom * DXA_TO_PX,
+        left: defaultCellPadding.left * DXA_TO_PX,
+        right: defaultCellPadding.right * DXA_TO_PX,
       };
+
+      const tableRows = block.table_cells || (block.rows?.map((row) => row.map((text) => ({ text }))) ?? []);
+
       return (
-        <table style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom, width: "100%" }} className="border-collapse">
+        <table style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom, width: "100%", borderCollapse: "collapse" }}>
           <tbody>
-            {(block.rows ?? []).map((row, r) => (
+            {tableRows.map((row, r) => (
               <tr key={r}>
                 {row.map((cell, c) => (
                   <td
                     key={c}
+                    colSpan={cell.col_span ?? 1}
+                    rowSpan={cell.row_span ?? 1}
                     style={{
                       border: block.style.border_visible ? "1px solid rgba(0,0,0,0.25)" : "1px solid transparent",
-                      paddingTop: cellPaddingPx.top,
-                      paddingBottom: cellPaddingPx.bottom,
-                      paddingLeft: cellPaddingPx.left,
-                      paddingRight: cellPaddingPx.right,
-                      verticalAlign: "top",
+                      paddingTop: (cell.padding_top_px ?? defaultPaddingPx.top),
+                      paddingBottom: (cell.padding_bottom_px ?? defaultPaddingPx.bottom),
+                      paddingLeft: (cell.padding_left_px ?? defaultPaddingPx.left),
+                      paddingRight: (cell.padding_right_px ?? defaultPaddingPx.right),
+                      verticalAlign: (cell.vertical_align ?? "top") as "top" | "middle" | "bottom",
                       wordBreak: "break-word",
                     }}
                   >
-                    {cell}
+                    {typeof cell === 'string' ? cell : cell.text}
                   </td>
                 ))}
               </tr>
@@ -89,6 +94,7 @@ function RenderedBlock({ block, index, totalBlocks }: { block: DocumentBlock; in
           </tbody>
         </table>
       );
+    }
     case "image_placeholder":
       return (
         <div style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom }}>

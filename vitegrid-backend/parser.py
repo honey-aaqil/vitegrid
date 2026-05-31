@@ -397,6 +397,21 @@ def synthesize_streams(
 
 
 @dataclass
+class TableCellProperties:
+    padding_top_dxa: int = 120
+    padding_bottom_dxa: int = 120
+    padding_left_dxa: int = 180
+    padding_right_dxa: int = 180
+    vertical_align: str = "top"
+    row_span: int = 1
+    col_span: int = 1
+    border_top: dict | None = None
+    border_bottom: dict | None = None
+    border_left: dict | None = None
+    border_right: dict | None = None
+
+
+@dataclass
 class DocxBlock:
     type: str
     text: str | None
@@ -415,6 +430,7 @@ class DocxBlock:
     after_dxa: int = 0
     line_spacing_dxa: int = 240
     line_rule: str = "auto"
+    table_cell_properties: list[list[TableCellProperties]] | None = None
 
 
 def _docx_color(color: RGBColor | None) -> str | None:
@@ -479,6 +495,45 @@ def _docx_spacing_dxa(para: Any) -> tuple[int, int, int, str]:
             line_rule = str(pf.line_rule).split(".")[-1].lower() if pf.line_rule else "auto"
 
     return (before_dxa, after_dxa, line_spacing_dxa, line_rule)
+
+
+def _extract_table_cell_properties(table: Any) -> list[list[TableCellProperties]]:
+    cell_props = []
+    for row_idx, row in enumerate(table.rows):
+        row_props = []
+        for col_idx, cell in enumerate(row.cells):
+            props = TableCellProperties()
+
+            if cell.tcPr:
+                tcPr = cell.tcPr
+                if tcPr.tcMar:
+                    tcMar = tcPr.tcMar
+                    if hasattr(tcMar, "top") and tcMar.top:
+                        props.padding_top_dxa = tcMar.top.w
+                    if hasattr(tcMar, "bottom") and tcMar.bottom:
+                        props.padding_bottom_dxa = tcMar.bottom.w
+                    if hasattr(tcMar, "left") and tcMar.left:
+                        props.padding_left_dxa = tcMar.left.w
+                    if hasattr(tcMar, "right") and tcMar.right:
+                        props.padding_right_dxa = tcMar.right.w
+
+                if hasattr(tcPr, "vAlign") and tcPr.vAlign:
+                    align_val = str(tcPr.vAlign).split(".")[-1].lower()
+                    if align_val in ("top", "center", "bottom"):
+                        props.vertical_align = align_val
+
+                if hasattr(tcPr, "gridSpan") and tcPr.gridSpan:
+                    props.col_span = tcPr.gridSpan
+
+            if hasattr(cell, "verticalAlignment"):
+                align_val = str(cell.verticalAlignment).split(".")[-1].lower() if cell.verticalAlignment else "top"
+                if align_val in ("top", "center", "bottom"):
+                    props.vertical_align = align_val
+
+            row_props.append(props)
+        cell_props.append(row_props)
+
+    return cell_props
 
 
 def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
@@ -608,6 +663,7 @@ def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
         for row in table.rows:
             rows.append([cell.text.strip() for cell in row.cells])
         if rows:
+            cell_props = _extract_table_cell_properties(table)
             blocks.append(
                 DocxBlock(
                     type="table",
@@ -620,6 +676,7 @@ def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
                     bold=False,
                     italic=False,
                     align=None,
+                    table_cell_properties=cell_props,
                 )
             )
 
