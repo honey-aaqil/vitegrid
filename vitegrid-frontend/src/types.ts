@@ -80,6 +80,8 @@ export interface DocumentBlock {
   rows?: string[][];
   table_cells?: TableCell[][];
   image_ref?: string;
+  image_width_px?: number;
+  image_height_px?: number;
   bbox?: BoundingBox;
   style: StyleTokens;
   spacing: SpacingTokens;

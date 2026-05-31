@@ -170,6 +170,8 @@ class DocumentBlock(BaseModel):
     rows: list[list[str]] | None = Field(default=None, description="2D table cells (text only).")
     table_cells: list[list[TableCell]] | None = Field(default=None, description="2D table cells with per-cell styling.")
     image_ref: str | None = Field(default=None, description="Resource locator for graphic assets.")
+    image_width_px: float | None = Field(default=None, description="Image width in pixels.")
+    image_height_px: float | None = Field(default=None, description="Image height in pixels.")
     bbox: BoundingBox | None = Field(default=None, description="Canvas bounding box coordinates.")
     style: StyleTokens = Field(default_factory=StyleTokens)
     spacing: SpacingTokens = Field(default_factory=SpacingTokens)
@@ -1663,6 +1665,9 @@ def import_from_docx_blocks(docx_blocks: list[Any]) -> tuple[DocumentLayout, Aud
                 items=b.items,
                 rows=b.rows,
                 table_cells=table_cells,
+                image_ref=b.image_ref,
+                image_width_px=getattr(b, 'image_width_px', None),
+                image_height_px=getattr(b, 'image_height_px', None),
                 style=style,
                 spacing=spacing,
             )

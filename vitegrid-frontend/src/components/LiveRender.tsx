@@ -117,27 +117,43 @@ function RenderedBlock({ block, index, totalBlocks }: { block: DocumentBlock; in
         </table>
       );
     }
-    case "image_placeholder":
+    case "image_placeholder": {
+      const imgWidth = block.image_width_px ?? 200;
+      const imgHeight = block.image_height_px ?? 150;
+      const placeholderHeight = Math.max(imgHeight, 128);
+
       return (
         <div style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom }}>
           {block.image_ref ? (
-            <img src={block.image_ref} alt="" style={{ maxWidth: "100%" }} />
+            <img
+              src={block.image_ref}
+              alt=""
+              style={{
+                width: imgWidth,
+                height: imgHeight,
+                maxWidth: "100%",
+                objectFit: "contain",
+              }}
+            />
           ) : (
-            <div style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              height: "128px",
-              border: "2px dashed rgba(0,0,0,0.3)",
-              borderRadius: "6px",
-              fontSize: "12px",
-              color: "rgba(0,0,0,0.4)",
-            }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                height: `${placeholderHeight}px`,
+                border: "2px dashed rgba(0,0,0,0.3)",
+                borderRadius: "6px",
+                fontSize: "12px",
+                color: "rgba(0,0,0,0.4)",
+              }}
+            >
               image placeholder
             </div>
           )}
         </div>
       );
+    }
   }
 }
 

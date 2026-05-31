@@ -433,6 +433,8 @@ class DocxBlock:
     table_cell_properties: list[list[TableCellProperties]] | None = None
     list_level_indent_dxa: int = 0
     list_hanging_indent_dxa: int = 0
+    image_width_px: float | None = None
+    image_height_px: float | None = None
 
 
 def _docx_color(color: RGBColor | None) -> str | None:
@@ -497,6 +499,27 @@ def _docx_spacing_dxa(para: Any) -> tuple[int, int, int, str]:
             line_rule = str(pf.line_rule).split(".")[-1].lower() if pf.line_rule else "auto"
 
     return (before_dxa, after_dxa, line_spacing_dxa, line_rule)
+
+
+EMU_TO_PX = 96 / 914400
+
+
+def _extract_image_dimensions(run: Any) -> tuple[float | None, float | None]:
+    if not run.element or not hasattr(run.element, "drawing"):
+        return (None, None)
+
+    for drawing in run.element.findall(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing"):
+        for inline in drawing.findall(".//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}inline"):
+            extent = inline.find(".//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}extent")
+            if extent is not None:
+                cx = extent.get("cx")
+                cy = extent.get("cy")
+                if cx and cy:
+                    width_px = float(cx) * EMU_TO_PX
+                    height_px = float(cy) * EMU_TO_PX
+                    return (width_px, height_px)
+
+    return (None, None)
 
 
 def _extract_list_indentation(para: Any) -> tuple[int, int]:
