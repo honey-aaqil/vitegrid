@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shutil
@@ -355,47 +356,169 @@ def delete_template(template_id: int, db: Session = Depends(get_db)) -> dict[str
 
 
 
-@app.get("/api/documents/{document_id}/stream")
-async def stream_document_reconstruction(document_id: str) -> StreamingResponse:
-    """Server-Sent Events endpoint for real-time visual regression loop streaming."""
-    async def demo_generator():
-        """Simulated optimization loop for demo purposes"""
-        yield {
-            "event": "parsing_complete",
-            "data": json.dumps({"status": "ready", "elements_count": 42}),
-        }
+class OptimizationRequest(BaseModel):
+    layout: dict[str, Any]
+    ground_truth_pdf_path: str
+    max_iterations: int = 4
+    target_threshold: float = 0.45
 
-        for iteration in range(1, 4):
-            divergence = max(0.01, 12.4 * (0.45 ** (iteration - 1)))
+
+@app.post("/api/documents/{document_id}/stream")
+async def stream_document_reconstruction(
+    document_id: str, req: OptimizationRequest
+) -> StreamingResponse:
+    """Server-Sent Events endpoint for real-time closed-loop optimization streaming."""
+
+    async def optimization_generator():
+        """Stream real optimization loop events from closed-loop engine"""
+        import base64
+        import asyncio
+        from pathlib import Path
+
+        try:
+            layout_obj = agent.DocumentLayout.model_validate(req.layout)
+            ground_truth_path = Path(req.ground_truth_pdf_path)
+
+            if not ground_truth_path.exists():
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": f"Ground truth PDF not found: {ground_truth_path}"}),
+                }
+                return
+
             yield {
-                "event": "evaluation_loop",
-                "data": json.dumps(
-                    {
-                        "iteration": iteration,
-                        "divergence_percentage": round(divergence, 2),
-                        "candidate_render_b64": "data:image/png;base64,iVBOR...",
-                        "diff_mask_b64": "data:image/png;base64,m098b...",
-                        "active_patch": {
-                            "diagnostics": f"Iteration {iteration} adjustments",
-                            "patch_count": 2,
-                        },
-                    }
-                ),
+                "event": "parsing_complete",
+                "data": json.dumps({
+                    "status": "starting_optimization",
+                    "elements_count": len(layout_obj.blocks),
+                    "document_id": document_id,
+                }),
             }
 
-        yield {
-            "event": "reconstruction_verified",
-            "data": json.dumps(
-                {
-                    "match_quality": "96.5%",
-                    "total_iterations": 3,
-                    "final_divergence_percentage": 0.02,
-                    "status": "converged",
-                }
-            ),
-        }
+            # Run optimization in executor to avoid blocking
+            def run_optimization():
+                try:
+                    from parser import render_layout_screenshot, calculate_visual_regression
+                    import pymupdf
+                    from pathlib import Path
+                    import uuid
 
-    formatter = sse_formatter(demo_generator())
+                    current_layout = copy.deepcopy(layout_obj)
+                    work_dir = ground_truth_path.parent / f"opt_{document_id}_{uuid.uuid4().hex}"
+                    work_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Rasterize ground truth
+                    gt_image_path = work_dir / "ground_truth.png"
+                    try:
+                        doc = pymupdf.open(str(ground_truth_path))
+                        pix = doc[0].get_pixmap(matrix=pymupdf.Matrix(96 / 72.0, 96 / 72.0), alpha=False)
+                        pix.save(str(gt_image_path))
+                        doc.close()
+                    except Exception as e:
+                        return f"Failed to read ground truth: {e}"
+
+                    gt_bytes = gt_image_path.read_bytes()
+                    results = []
+
+                    for iteration in range(req.max_iterations):
+                        cand_path = work_dir / f"candidate_{iteration}.png"
+                        diff_path = work_dir / f"diff_{iteration}.png"
+
+                        try:
+                            render_layout_screenshot(
+                                current_layout.model_dump_json(),
+                                cand_path,
+                                width=int(current_layout.page_width_px),
+                                height=int(current_layout.page_height_px),
+                            )
+                        except Exception as e:
+                            return f"Render failed at iteration {iteration}: {e}"
+
+                        if not cand_path.exists():
+                            break
+
+                        try:
+                            error_score = calculate_visual_regression(gt_image_path, cand_path, diff_path)
+                        except Exception as e:
+                            return f"Regression calc failed: {e}"
+
+                        cand_bytes = cand_path.read_bytes()
+                        diff_bytes = diff_path.read_bytes() if diff_path.exists() else b""
+
+                        results.append({
+                            "iteration": iteration,
+                            "divergence": error_score,
+                            "candidate_b64": base64.b64encode(cand_bytes).decode(),
+                            "diff_b64": base64.b64encode(diff_bytes).decode() if diff_bytes else "",
+                        })
+
+                        if error_score <= req.target_threshold:
+                            break
+
+                        try:
+                            patch_report = agent.agent_refine_layout_schema(
+                                gt_bytes, cand_bytes, diff_bytes, current_layout
+                            )
+                            block_map = {b.id: b for b in current_layout.blocks}
+                            for patch in patch_report.patches:
+                                if patch.element_id in block_map:
+                                    target_block = block_map[patch.element_id]
+                                    if patch.font_size_pt and patch.font_size_pt != 11.0:
+                                        target_block.style.font_size_pt = patch.font_size_pt
+                                    if patch.text_align:
+                                        target_block.style.align = patch.text_align
+                            current_layout = agent.auto_layout(current_layout)
+                        except Exception as e:
+                            return f"Patch application failed: {e}"
+
+                    return (current_layout, results)
+                except Exception as e:
+                    return f"Optimization error: {str(e)}"
+
+            # Run optimization
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, run_optimization)
+
+            if isinstance(result, str):
+                # Error occurred
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": result}),
+                }
+                return
+
+            final_layout, iterations = result
+
+            # Stream iteration results
+            for it_data in iterations:
+                yield {
+                    "event": "evaluation_loop",
+                    "data": json.dumps({
+                        "iteration": it_data["iteration"] + 1,
+                        "divergence_percentage": round(it_data["divergence"], 2),
+                        "candidate_render_b64": f"data:image/png;base64,{it_data['candidate_b64']}",
+                        "diff_mask_b64": f"data:image/png;base64,{it_data['diff_b64']}" if it_data['diff_b64'] else "",
+                    }),
+                }
+
+            # Final result
+            yield {
+                "event": "reconstruction_verified",
+                "data": json.dumps({
+                    "status": "converged",
+                    "total_iterations": len(iterations),
+                    "final_divergence_percentage": iterations[-1]["divergence"] if iterations else 0,
+                    "final_layout": final_layout.model_dump(),
+                }),
+            }
+
+        except Exception as e:
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": f"Stream error: {str(e)}"}),
+            }
+
+    formatter = sse_formatter(optimization_generator())
     return StreamingResponse(formatter, media_type="text/event-stream")
 
 

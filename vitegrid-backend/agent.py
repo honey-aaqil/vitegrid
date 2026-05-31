@@ -1958,18 +1958,19 @@ def optimize_template_closed_loop(
         # Step E: Apply precision schema structural changes
         block_map = {b.id: b for b in current_layout.blocks}
         for patch in patch_report.patches:
-            if patch.block_id in block_map:
-                target_block = block_map[patch.block_id]
-                if patch.font_size_change_pt is not None and target_block.style.font_size_pt is not None:
-                    target_block.style.font_size_pt = round(
-                        target_block.style.font_size_pt + patch.font_size_change_pt, 1
-                    )
-                if patch.align_patch is not None:
-                    target_block.style.align = patch.align_patch
-                if patch.font_weight_patch is not None:
-                    target_block.style.font_weight = patch.font_weight_patch
-                if patch.margin_top_shift_px is not None and target_block.bbox is not None:
-                    target_block.bbox.y_px = float(target_block.bbox.y_px + patch.margin_top_shift_px)
+            if patch.element_id in block_map:
+                target_block = block_map[patch.element_id]
+                if patch.font_size_pt and patch.font_size_pt != 11.0:
+                    target_block.style.font_size_pt = patch.font_size_pt
+                if patch.text_align and patch.text_align != target_block.style.align:
+                    target_block.style.align = patch.text_align
+                if patch.line_height_multiplier and patch.line_height_multiplier > 1.0:
+                    if target_block.spacing.line_height_px:
+                        target_block.spacing.line_height_px = target_block.style.font_size_pt * patch.line_height_multiplier
+                if patch.margin.top_px and patch.margin.top_px != 0 and target_block.bbox:
+                    target_block.bbox.y_px = float(target_block.bbox.y_px + patch.margin.top_px)
+                if patch.margin.left_px and patch.margin.left_px != 0 and target_block.bbox:
+                    target_block.bbox.x_px = float(target_block.bbox.x_px + patch.margin.left_px)
 
         # Step F: Force a geometric auto-layout normalization pass
         current_layout = auto_layout(current_layout)
