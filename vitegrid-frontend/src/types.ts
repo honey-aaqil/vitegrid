@@ -40,6 +40,8 @@ export interface StyleTokens {
   cell_padding_dxa: CellPaddingDxa;
   list_format: ListFormat;
   list_level: number;
+  list_level_indent_px?: number;
+  list_hanging_indent_px?: number;
 }
 
 export interface SpacingTokens {
@@ -117,6 +119,8 @@ export const DEFAULT_STYLE_TOKENS: StyleTokens = {
   cell_padding_dxa: { top: 120, bottom: 120, left: 180, right: 180 },
   list_format: "bullet",
   list_level: 0,
+  list_level_indent_px: 0,
+  list_hanging_indent_px: 0,
 };
 
 export const DEFAULT_SPACING_TOKENS: SpacingTokens = {

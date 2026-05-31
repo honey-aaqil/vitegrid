@@ -131,6 +131,12 @@ class StyleTokens(BaseModel):
         default=ListFormat.BULLET, description="Applied format of list bullet/marker."
     )
     list_level: int = Field(default=0, description="Hierarchical indentation level of list items.")
+    list_level_indent_px: float = Field(
+        default=0.0, description="List level indentation in pixels (left indent for nested items)."
+    )
+    list_hanging_indent_px: float = Field(
+        default=0.0, description="List hanging indent in pixels (bullet/number width, negative text-indent)."
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -1596,6 +1602,9 @@ def import_from_docx_blocks(docx_blocks: list[Any]) -> tuple[DocumentLayout, Aud
     DXA_TO_PX = 96 / 1440
     blocks: list[DocumentBlock] = []
     for i, b in enumerate(docx_blocks):
+        list_level_indent_px = (getattr(b, 'list_level_indent_dxa', 0) or 0) * DXA_TO_PX
+        list_hanging_indent_px = (getattr(b, 'list_hanging_indent_dxa', 0) or 0) * DXA_TO_PX
+
         style = StyleTokens(
             font_family=b.font or "Arial",
             font_size_pt=b.size_pt or 11.0,
@@ -1606,6 +1615,8 @@ def import_from_docx_blocks(docx_blocks: list[Any]) -> tuple[DocumentLayout, Aud
             strikethrough=getattr(b, 'strikethrough', False),
             color_hex=b.color_hex or "000000",
             align=b.align or "left",
+            list_level_indent_px=list_level_indent_px,
+            list_hanging_indent_px=list_hanging_indent_px,
             border_visible=True if b.type == "table" else None,
         )
         spacing = SpacingTokens(

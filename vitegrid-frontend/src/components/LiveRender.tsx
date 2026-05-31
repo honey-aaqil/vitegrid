@@ -47,14 +47,36 @@ function RenderedBlock({ block, index, totalBlocks }: { block: DocumentBlock; in
           {block.text}
         </p>
       );
-    case "list":
+    case "list": {
+      const listPaddingLeft = block.style.list_level_indent_px ?? 0;
+      const listHangingIndent = block.style.list_hanging_indent_px ?? 0;
+      const effectivePaddingLeft = Math.max(listPaddingLeft, 8);
+      const effectiveHangingIndent = Math.max(listHangingIndent, 0);
+
       return (
-        <ul style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom }} className="list-disc pl-6">
+        <ul
+          style={{
+            ...css,
+            marginTop: margin_top,
+            marginBottom: margin_bottom,
+            paddingLeft: effectivePaddingLeft,
+            listStylePosition: "outside",
+          }}
+        >
           {(block.items ?? []).map((item, i) => (
-            <li key={i}>{item}</li>
+            <li
+              key={i}
+              style={{
+                textIndent: effectiveHangingIndent > 0 ? `-${effectiveHangingIndent}px` : undefined,
+                paddingLeft: effectiveHangingIndent > 0 ? `${effectiveHangingIndent}px` : undefined,
+              }}
+            >
+              {item}
+            </li>
           ))}
         </ul>
       );
+    }
     case "table": {
       const defaultCellPadding = block.style.cell_padding_dxa || { top: 120, bottom: 120, left: 180, right: 180 };
       const defaultPaddingPx = {

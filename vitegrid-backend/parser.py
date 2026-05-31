@@ -431,6 +431,8 @@ class DocxBlock:
     line_spacing_dxa: int = 240
     line_rule: str = "auto"
     table_cell_properties: list[list[TableCellProperties]] | None = None
+    list_level_indent_dxa: int = 0
+    list_hanging_indent_dxa: int = 0
 
 
 def _docx_color(color: RGBColor | None) -> str | None:
@@ -495,6 +497,20 @@ def _docx_spacing_dxa(para: Any) -> tuple[int, int, int, str]:
             line_rule = str(pf.line_rule).split(".")[-1].lower() if pf.line_rule else "auto"
 
     return (before_dxa, after_dxa, line_spacing_dxa, line_rule)
+
+
+def _extract_list_indentation(para: Any) -> tuple[int, int]:
+    level_indent_dxa = 0
+    hanging_indent_dxa = 0
+
+    if para.paragraph_format:
+        pf = para.paragraph_format
+        if pf.left_indent and hasattr(pf.left_indent, "twips"):
+            level_indent_dxa = pf.left_indent.twips
+        if pf.first_line_indent and hasattr(pf.first_line_indent, "twips"):
+            hanging_indent_dxa = -pf.first_line_indent.twips
+
+    return (level_indent_dxa, hanging_indent_dxa)
 
 
 def _extract_table_cell_properties(table: Any) -> list[list[TableCellProperties]]:
@@ -567,6 +583,8 @@ def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
                     after_dxa=pending_list_meta.get("after_dxa", 0),
                     line_spacing_dxa=pending_list_meta.get("line_spacing_dxa", 240),
                     line_rule=pending_list_meta.get("line_rule", "auto"),
+                    list_level_indent_dxa=pending_list_meta.get("level_indent_dxa", 0),
+                    list_hanging_indent_dxa=pending_list_meta.get("hanging_indent_dxa", 0),
                 )
             )
         pending_list.clear()
@@ -585,6 +603,7 @@ def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
         strikethrough = _docx_strikethrough(first_run) if first_run else False
         align = _docx_alignment(para.alignment)
         before_dxa, after_dxa, line_spacing_dxa, line_rule = _docx_spacing_dxa(para)
+        level_indent_dxa, hanging_indent_dxa = _extract_list_indentation(para)
 
         is_list_item = "list" in style_name or "bullet" in style_name
         if is_list_item and text:
@@ -604,6 +623,8 @@ def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
                     "after_dxa": after_dxa,
                     "line_spacing_dxa": line_spacing_dxa,
                     "line_rule": line_rule,
+                    "level_indent_dxa": level_indent_dxa,
+                    "hanging_indent_dxa": hanging_indent_dxa,
                 }
             continue
 
