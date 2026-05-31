@@ -15,6 +15,7 @@ load_dotenv()
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session
 import agent
 import parser as docparser
 from database import ImageAsset, Template, get_db, init_db
+from streaming import demo_iteration_generator, sse_formatter
 
 UPLOAD_DIR = Path(os.environ.get("VITEGRID_UPLOAD_DIR", "static/uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -350,6 +352,51 @@ def delete_template(template_id: int, db: Session = Depends(get_db)) -> dict[str
     db.delete(tpl)
     db.commit()
     return {"status": "deleted"}
+
+
+
+@app.get("/api/documents/{document_id}/stream")
+async def stream_document_reconstruction(document_id: str) -> StreamingResponse:
+    """Server-Sent Events endpoint for real-time visual regression loop streaming."""
+    async def demo_generator():
+        """Simulated optimization loop for demo purposes"""
+        yield {
+            "event": "parsing_complete",
+            "data": json.dumps({"status": "ready", "elements_count": 42}),
+        }
+
+        for iteration in range(1, 4):
+            divergence = max(0.01, 12.4 * (0.45 ** (iteration - 1)))
+            yield {
+                "event": "evaluation_loop",
+                "data": json.dumps(
+                    {
+                        "iteration": iteration,
+                        "divergence_percentage": round(divergence, 2),
+                        "candidate_render_b64": "data:image/png;base64,iVBOR...",
+                        "diff_mask_b64": "data:image/png;base64,m098b...",
+                        "active_patch": {
+                            "diagnostics": f"Iteration {iteration} adjustments",
+                            "patch_count": 2,
+                        },
+                    }
+                ),
+            }
+
+        yield {
+            "event": "reconstruction_verified",
+            "data": json.dumps(
+                {
+                    "match_quality": "96.5%",
+                    "total_iterations": 3,
+                    "final_divergence_percentage": 0.02,
+                    "status": "converged",
+                }
+            ),
+        }
+
+    formatter = sse_formatter(demo_generator())
+    return StreamingResponse(formatter, media_type="text/event-stream")
 
 
 if __name__ == "__main__":

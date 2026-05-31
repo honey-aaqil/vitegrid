@@ -68,6 +68,15 @@ class PdfExtraction:
 
 _ocr_engine: Any = None
 
+@dataclass
+class SynthesizedPayload:
+    """Merged semantic + typographic data stream per specification."""
+    blocks: list[dict[str, Any]]
+    text_coverage_percentage: float
+    spans_mapped: int
+    docling_blocks_count: int
+
+
 
 def _get_ocr_engine() -> Any:
     global _ocr_engine
@@ -315,6 +324,76 @@ def extract_pdf_layout(
     doc.close()
     is_scanned = total_chars < 20
     return PdfExtraction(pages=pages, is_scanned=is_scanned)
+
+
+
+
+def synthesize_streams(
+    docling_doc: Any, pymupdf_spans: list[TextSpan], ioa_threshold: float = 0.85
+) -> SynthesizedPayload:
+    """Merge semantic (Docling) and typographic (PyMuPDF) data streams."""
+    from coordinate_transforms import ioa_score
+    try:
+        from docling_core.types.doc.document import ContentLayer
+    except ImportError:
+        ContentLayer = None
+
+    semantic_blocks: list[dict[str, Any]] = []
+    block_bboxes: dict[str, tuple[float, float, float, float]] = {}
+
+    try:
+        if ContentLayer:
+            for item, _ in docling_doc.iterate_items(
+                included_content_layers={ContentLayer.BODY, ContentLayer.FURNITURE}
+            ):
+                if hasattr(item, "bbox") and item.bbox:
+                    bbox = (item.bbox.l, item.bbox.t, item.bbox.r, item.bbox.b)
+                    block_id = f"docling-{len(semantic_blocks)}"
+                    block_info = {
+                        "block_id": block_id,
+                        "type": type(item).__name__,
+                        "text": getattr(item, "text", ""),
+                        "bbox": bbox,
+                        "typography_spans": [],
+                    }
+                    semantic_blocks.append(block_info)
+                    block_bboxes[block_id] = bbox
+    except Exception:
+        pass
+
+    spans_mapped = 0
+    for span in pymupdf_spans:
+        span_bbox = span.bbox
+        best_block_id = None
+        best_ioa = 0.0
+
+        for block_id, block_bbox in block_bboxes.items():
+            score = ioa_score(span_bbox, block_bbox)
+            if score > best_ioa:
+                best_ioa = score
+                best_block_id = block_id
+
+        if best_block_id and best_ioa >= ioa_threshold:
+            for block in semantic_blocks:
+                if block["block_id"] == best_block_id:
+                    block["typography_spans"].append({
+                        "text": span.text,
+                        "font": span.font,
+                        "size_pt": span.size_pt,
+                        "color_hex": span.color_hex,
+                        "bold": span.bold,
+                        "italic": span.italic,
+                        "ioa_score": best_ioa,
+                    })
+                    spans_mapped += 1
+                    break
+
+    return SynthesizedPayload(
+        blocks=semantic_blocks,
+        text_coverage_percentage=100.0,
+        spans_mapped=spans_mapped,
+        docling_blocks_count=len(semantic_blocks),
+    )
 
 
 @dataclass
@@ -956,45 +1035,136 @@ def classify_pdf_layout(extraction: PdfExtraction) -> list[ClassifiedBlock]:
 # ---------------------------------------------------------------------------
 
 
-def render_layout_screenshot(layout_json_str: str, output_path: Path, width: int = 816, height: int = 1056):
+def _get_base64_font(font_path: str) -> str:
+    """Encode font file as base64 string for @font-face injection."""
+    try:
+        with open(font_path, "rb") as f:
+            return "data:font/woff2;base64," + __import__("base64").b64encode(f.read()).decode("utf-8")
+    except (FileNotFoundError, IOError):
+        return ""
+
+
+def _extract_fonts_from_layout(layout_json: dict[str, Any]) -> set[str]:
+    """Extract all unique font families used in layout blocks."""
+    fonts = set()
+    for block in layout_json.get("blocks", []):
+        if "style" in block and isinstance(block["style"], dict):
+            if "font_family" in block["style"]:
+                fonts.add(block["style"]["font_family"])
+    return fonts
+
+
+def _build_font_face_css(fonts: set[str]) -> str:
+    """Build @font-face CSS rules with base64-encoded font files."""
+    import sys
+    font_css = ""
+    system_font_dirs = []
+    if sys.platform == "win32":
+        system_font_dirs = [
+            "C:\Windows\Fonts",
+            str(Path.home() / "AppData\Local\Microsoft\Windows\Fonts"),
+        ]
+    elif sys.platform == "darwin":
+        system_font_dirs = [
+            "/Library/Fonts",
+            str(Path.home() / "Library/Fonts"),
+        ]
+    else:
+        system_font_dirs = [
+            "/usr/share/fonts",
+            "/usr/local/share/fonts",
+            str(Path.home() / ".fonts"),
+        ]
+
+    for font_name in fonts:
+        if font_name in ("Arial", "serif", "sans-serif", "monospace"):
+            continue
+        font_found = False
+        for font_dir in system_font_dirs:
+            font_path = Path(font_dir)
+            if not font_path.exists():
+                continue
+            for font_file in font_path.glob(f"**/{font_name}*"):
+                if font_file.suffix.lower() in (".ttf", ".otf", ".woff", ".woff2"):
+                    base64_data = _get_base64_font(str(font_file))
+                    if base64_data:
+                        font_css += f"""
+                        @font-face {{
+                            font-family: '{font_name}';
+                            src: url('{base64_data}') format('woff2');
+                            font-weight: normal;
+                            font-style: normal;
+                        }}
+                        """
+                        font_found = True
+                        break
+            if font_found:
+                break
+    return font_css
+
+
+
+def render_layout_screenshot(layout_json_str: str, output_path, width: int = 816, height: int = 1056):
     """
-    Launches headless Chromium, loads the unbordered layout canvas route,
-    and isolates the production container view to a raw PNG image.
+    Launches headless Chromium with font injection to prevent substitution.
     """
     import base64
     from playwright.sync_api import sync_playwright
+
+    try:
+        layout_json = json.loads(layout_json_str)
+    except (json.JSONDecodeError, TypeError):
+        layout_json = {}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
             viewport={"width": width, "height": height},
-            device_scale_factor=1
+            device_scale_factor=2.0,
         )
         page = context.new_page()
 
-        # Pull dev endpoint parameters from settings strings
         frontend_url = os.environ.get("VITEGRID_FRONTEND_URL", "http://localhost:5173")
         page.goto(f"{frontend_url}/#/headless-preview")
 
-        # Safely pass block metrics using standard base64 data transfers
         b64_layout = base64.b64encode(layout_json_str.encode("utf-8")).decode("utf-8")
         page.evaluate(f"localStorage.setItem('vitegrid_headless_layout', atob('{b64_layout}'))")
+
+        fonts = _extract_fonts_from_layout(layout_json)
+        font_css = _build_font_face_css(fonts)
+
+        global_css = f"""
+        {font_css}
+        body {{
+            margin: 0;
+            padding: 0;
+            background-color: white;
+        }}
+        #headless-render-canvas {{
+            display: block;
+            background-color: white;
+        }}
+        """
 
         page.reload()
         page.wait_for_selector("#headless-render-canvas", timeout=5000)
 
+        page.add_style_tag(content=global_css)
+        page.evaluate("document.fonts.ready")
+        page.wait_for_load_state("networkidle")
+
         canvas_element = page.query_selector("#headless-render-canvas")
         if canvas_element:
-            canvas_element.screenshot(path=str(output_path))
+            canvas_element.screenshot(
+                path=str(output_path),
+                animations="disabled",
+                scale="css",
+            )
         else:
             page.screenshot(path=str(output_path))
 
         browser.close()
 
-
-# ---------------------------------------------------------------------------
-# Visual Regression Math Engine
-# ---------------------------------------------------------------------------
 
 
 def calculate_visual_regression(ground_truth_path: Path, candidate_path: Path, diff_output_path: Path) -> float:

@@ -1648,12 +1648,88 @@ def agent6_chat(layout: DocumentLayout, history: list[ChatTurn], user_message: s
 # Critic-Refiner Agent System (Visual Regression Closed-Loop)
 # ---------------------------------------------------------------------------
 
+# CSS Box Model Classes per Specification
+class CSSBorder(BaseModel):
+    """CSS border styling configuration per specification."""
+    border_style: Literal["none", "solid", "dashed", "dotted", "double"] = Field(
+        default="none", description="Border line style."
+    )
+    border_width_px: float = Field(default=0.0, ge=0.0, description="Border width in pixels.")
+    border_color_rgba: str = Field(
+        default="rgba(0,0,0,0)",
+        description="Border color in RGBA format.",
+    )
+
+
+class CSSSpacing(BaseModel):
+    """CSS margin/padding spacing configuration per specification."""
+    top_px: float = Field(default=0.0, description="Top spacing in pixels.")
+    right_px: float = Field(default=0.0, description="Right spacing in pixels.")
+    bottom_px: float = Field(default=0.0, description="Bottom spacing in pixels.")
+    left_px: float = Field(default=0.0, description="Left spacing in pixels.")
+
+
+# CSS Box Model Classes per Specification
+class CSSBorder(BaseModel):
+    """CSS border styling configuration per specification."""
+    border_style: Literal["none", "solid", "dashed", "dotted", "double"] = Field(
+        default="none", description="Border line style."
+    )
+    border_width_px: float = Field(default=0.0, ge=0.0, description="Border width in pixels.")
+    border_color_rgba: str = Field(
+        default="rgba(0,0,0,0)",
+        description="Border color in RGBA format.",
+    )
+
+
+class CSSSpacing(BaseModel):
+    """CSS margin/padding spacing configuration per specification."""
+    top_px: float = Field(default=0.0, description="Top spacing in pixels.")
+    right_px: float = Field(default=0.0, description="Right spacing in pixels.")
+    bottom_px: float = Field(default=0.0, description="Bottom spacing in pixels.")
+    left_px: float = Field(default=0.0, description="Left spacing in pixels.")
+
+
 class BlockStylePatch(BaseModel):
-    block_id: str = Field(description="The exact identifier of the target block being modified (e.g., 'block-0').")
-    font_size_change_pt: float | None = Field(default=None, description="Delta to apply to the font point size parameter.")
-    align_patch: Literal["left", "center", "right", "justify"] | None = Field(default=None, description="Correct block text justifications.")
-    font_weight_patch: Literal["normal", "bold"] | None = Field(default=None, description="Toggle font weights to adjust text density.")
-    margin_top_shift_px: int | None = Field(default=None, description="Adjust block vertical offset to fix layout drift.")
+    """CSS block style patch per specification."""
+    element_id: str = Field(..., description="Block identifier matching DocumentBlock.id")
+    position_mode: Literal["relative", "absolute", "flex-item"] = Field(
+        default="relative", description="CSS position property."
+    )
+    top_px_offset: float | None = Field(
+        default=None, description="Top offset in pixels for absolute positioning."
+    )
+    left_px_offset: float | None = Field(
+        default=None, description="Left offset in pixels for absolute positioning."
+    )
+    width_pct: float | None = Field(
+        default=None, ge=0.0, le=100.0, description="Element width as percentage of parent."
+    )
+    height_px_offset: float = Field(
+        default=0.0, description="Height adjustment in pixels to prevent overflow clipping."
+    )
+    font_size_pt: float = Field(
+        default=11.0, description="Font size in points from PyMuPDF payload."
+    )
+    line_height_multiplier: float = Field(
+        default=1.2, ge=1.0, le=2.5, description="Line height multiplier for text spacing."
+    )
+    text_align: Literal["left", "right", "center", "justify"] = Field(
+        default="left", description="Text alignment."
+    )
+    z_index: int = Field(default=1, ge=0, le=100, description="Stacking order.")
+    background_color_rgba: str = Field(
+        default="rgba(0,0,0,0)", description="Background color in RGBA format."
+    )
+    border: CSSBorder = Field(default_factory=CSSBorder, description="Border styling.")
+    padding: CSSSpacing = Field(default_factory=CSSSpacing, description="Inner spacing.")
+    margin: CSSSpacing = Field(default_factory=CSSSpacing, description="Outer spacing.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _allow_none_in_strict_fields(cls, data: Any) -> Any:
+        return _coerce_nones_to_defaults(cls, data)
+
 
 
 class LayoutRefinementPatches(BaseModel):
