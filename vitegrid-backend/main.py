@@ -356,18 +356,14 @@ def delete_template(template_id: int, db: Session = Depends(get_db)) -> dict[str
 
 
 
-class OptimizationRequest(BaseModel):
-    layout: dict[str, Any]
-    ground_truth_pdf_path: str
-    max_iterations: int = 4
-    target_threshold: float = 0.45
-
-
-@app.post("/api/documents/{document_id}/stream")
+@app.get("/api/documents/{document_id}/stream")
 async def stream_document_reconstruction(
-    document_id: str, req: OptimizationRequest
+    document_id: str,
+    source_file_path: str,
+    max_iterations: int = 10,
+    target_threshold: float = 0.01,
 ) -> StreamingResponse:
-    """Server-Sent Events endpoint for real-time closed-loop optimization streaming."""
+    """Server-Sent Events endpoint using GET requests for reliable event stream."""
 
     async def optimization_generator():
         """Stream real optimization loop events from closed-loop engine"""
@@ -376,36 +372,38 @@ async def stream_document_reconstruction(
         from pathlib import Path
 
         try:
-            layout_obj = agent.DocumentLayout.model_validate(req.layout)
-            ground_truth_path = Path(req.ground_truth_pdf_path)
+            clean_path = source_file_path.lstrip("/")
+            ground_truth_path = Path(clean_path)
 
             if not ground_truth_path.exists():
-                yield {
-                    "event": "error",
-                    "data": json.dumps({"error": f"Ground truth PDF not found: {ground_truth_path}"}),
-                }
+                yield f"event: error\ndata: {json.dumps({'error': f'Source not found: {source_file_path}'})}\n\n"
                 return
 
-            yield {
-                "event": "parsing_complete",
-                "data": json.dumps({
-                    "status": "starting_optimization",
-                    "elements_count": len(layout_obj.blocks),
-                    "document_id": document_id,
-                }),
-            }
+            yield f"event: parsing_complete\ndata: {json.dumps({'status': 'initializing_loop', 'document_id': document_id})}\n\n"
 
             # Run optimization in executor to avoid blocking
             def run_optimization():
                 try:
-                    from parser import render_layout_screenshot, calculate_visual_regression
+                    from parser import render_layout_screenshot, calculate_visual_regression, extract_pdf_layout, classify_pdf_layout
                     import pymupdf
                     from pathlib import Path
                     import uuid
+                    import re
 
-                    current_layout = copy.deepcopy(layout_obj)
                     work_dir = ground_truth_path.parent / f"opt_{document_id}_{uuid.uuid4().hex}"
                     work_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Re-parse the source document to get initial layout
+                    try:
+                        extraction = extract_pdf_layout(ground_truth_path)
+                        classified = classify_pdf_layout(extraction)
+                        page_w = extraction.pages[0].page_width_pt if extraction.pages else 612.0
+                        page_h = extraction.pages[0].page_height_pt if extraction.pages else 792.0
+                        current_layout, _ = agent.import_from_classified_blocks(
+                            classified, page_w, page_h, len(extraction.pages)
+                        )
+                    except Exception as e:
+                        return f"Failed to parse source document: {e}"
 
                     # Rasterize ground truth
                     gt_image_path = work_dir / "ground_truth.png"
@@ -420,7 +418,7 @@ async def stream_document_reconstruction(
                     gt_bytes = gt_image_path.read_bytes()
                     results = []
 
-                    for iteration in range(req.max_iterations):
+                    for iteration in range(max_iterations):
                         cand_path = work_dir / f"candidate_{iteration}.png"
                         diff_path = work_dir / f"diff_{iteration}.png"
 
@@ -452,7 +450,7 @@ async def stream_document_reconstruction(
                             "diff_b64": base64.b64encode(diff_bytes).decode() if diff_bytes else "",
                         })
 
-                        if error_score <= req.target_threshold:
+                        if error_score <= target_threshold:
                             break
 
                         try:
@@ -478,7 +476,6 @@ async def stream_document_reconstruction(
 
                                     # 2. Convert and Apply Background Shading Colors
                                     if patch.background_color_rgba and "rgba(0,0,0,0)" not in patch.background_color_rgba:
-                                        import re
                                         rgba_numbers = [int(x) for x in re.findall(r"\d+", patch.background_color_rgba)[:3]]
                                         if len(rgba_numbers) == 3:
                                             target_block.style.background_hex = f"{rgba_numbers[0]:02x}{rgba_numbers[1]:02x}{rgba_numbers[2]:02x}"
@@ -515,45 +512,35 @@ async def stream_document_reconstruction(
 
             if isinstance(result, str):
                 # Error occurred
-                yield {
-                    "event": "error",
-                    "data": json.dumps({"error": result}),
-                }
+                error_data = {"error": result}
+                yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
                 return
 
             final_layout, iterations = result
 
             # Stream iteration results
             for it_data in iterations:
-                yield {
-                    "event": "evaluation_loop",
-                    "data": json.dumps({
-                        "iteration": it_data["iteration"] + 1,
-                        "divergence_percentage": round(it_data["divergence"], 2),
-                        "candidate_render_b64": f"data:image/png;base64,{it_data['candidate_b64']}",
-                        "diff_mask_b64": f"data:image/png;base64,{it_data['diff_b64']}" if it_data['diff_b64'] else "",
-                    }),
+                event_data = {
+                    "iteration": it_data["iteration"] + 1,
+                    "divergence_percentage": round(it_data["divergence"], 2),
+                    "candidate_render_b64": f"data:image/png;base64,{it_data['candidate_b64']}",
+                    "diff_mask_b64": f"data:image/png;base64,{it_data['diff_b64']}" if it_data["diff_b64"] else "",
                 }
+                yield f"event: evaluation_loop\ndata: {json.dumps(event_data)}\n\n"
 
             # Final result
-            yield {
-                "event": "reconstruction_verified",
-                "data": json.dumps({
-                    "status": "converged",
-                    "total_iterations": len(iterations),
-                    "final_divergence_percentage": iterations[-1]["divergence"] if iterations else 0,
-                    "final_layout": final_layout.model_dump(),
-                }),
+            final_data = {
+                "status": "converged",
+                "total_iterations": len(iterations),
+                "final_divergence_percentage": iterations[-1]["divergence"] if iterations else 0,
+                "final_layout": final_layout.model_dump(),
             }
+            yield f"event: reconstruction_verified\ndata: {json.dumps(final_data)}\n\n"
 
         except Exception as e:
-            yield {
-                "event": "error",
-                "data": json.dumps({"error": f"Stream error: {str(e)}"}),
-            }
+            yield f"event: error\ndata: {json.dumps({'error': f'Stream error: {str(e)}'})}\n\n"
 
-    formatter = sse_formatter(optimization_generator())
-    return StreamingResponse(formatter, media_type="text/event-stream")
+    return StreamingResponse(optimization_generator(), media_type="text/event-stream")
 
 
 if __name__ == "__main__":
