@@ -471,12 +471,17 @@ async def stream_document_reconstruction(
                                         target_block.style.font_size_pt = patch.font_size_pt
                                     if patch.text_align:
                                         target_block.style.align = patch.text_align
+                                    if patch.color_hex:
+                                        target_block.style.color_hex = patch.color_hex.replace("#", "")
                                     if patch.line_height_multiplier and patch.line_height_multiplier > 1.0:
                                         target_block.spacing.line_height_px = target_block.style.font_size_pt * patch.line_height_multiplier
 
-                                    # 2. Apply Background and Canvas Visual Shading
-                                    if patch.background_color_rgba and patch.background_color_rgba != "rgba(0,0,0,0)":
-                                        target_block.style.background_hex = patch.background_color_rgba
+                                    # 2. Convert and Apply Background Shading Colors
+                                    if patch.background_color_rgba and "rgba(0,0,0,0)" not in patch.background_color_rgba:
+                                        import re
+                                        rgba_numbers = [int(x) for x in re.findall(r"\d+", patch.background_color_rgba)[:3]]
+                                        if len(rgba_numbers) == 3:
+                                            target_block.style.background_hex = f"{rgba_numbers[0]:02x}{rgba_numbers[1]:02x}{rgba_numbers[2]:02x}"
 
                                     # 3. Apply Absolute Spatial Bounding Updates to match Input Imagery
                                     if target_block.bbox:
@@ -554,4 +559,4 @@ async def stream_document_reconstruction(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=False)
+    uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=True)

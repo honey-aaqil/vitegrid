@@ -70,16 +70,18 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
   };
 
   const renderInnerContent = () => {
+    const cleanCss = hasAbsoluteGeometry ? { ...css, marginTop: 0, marginBottom: 0 } : css;
+
     switch (block.type) {
     case "heading":
       return (
-        <h2 style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom }}>
+        <h2 style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom }}>
           {block.text}
         </h2>
       );
     case "paragraph":
       return (
-        <p style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom }}>
+        <p style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom }}>
           {block.text}
         </p>
       );
@@ -92,9 +94,10 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
       return (
         <ul
           style={{
-            ...css,
-            marginTop: margin_top,
-            marginBottom: margin_bottom,
+            ...cleanCss,
+            margin: hasAbsoluteGeometry ? 0 : undefined,
+            marginTop: hasAbsoluteGeometry ? 0 : margin_top,
+            marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom,
             paddingLeft: effectivePaddingLeft,
             listStylePosition: "outside",
           }}
@@ -125,7 +128,7 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
       const tableRows = block.table_cells || (block.rows?.map((row) => row.map((text) => ({ text, col_span: 1, row_span: 1, padding_top_px: 8, padding_bottom_px: 8, padding_left_px: 12, padding_right_px: 12, vertical_align: "top" as const }))) ?? []);
 
       return (
-        <table style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom, width: "100%", borderCollapse: "collapse" }}>
+        <table style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom, width: "100%", borderCollapse: "collapse" }}>
           <tbody>
             {tableRows.map((row, r) => (
               <tr key={r}>
@@ -159,7 +162,7 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
       const placeholderHeight = Math.max(imgHeight, 128);
 
       return (
-        <div style={{ ...css, marginTop: margin_top, marginBottom: margin_bottom }}>
+        <div style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom }}>
           {block.image_ref ? (
             <img
               src={block.image_ref}

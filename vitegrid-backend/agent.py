@@ -1807,6 +1807,9 @@ class BlockStylePatch(BaseModel):
     font_size_pt: float = Field(
         default=11.0, description="Font size in points from PyMuPDF payload."
     )
+    color_hex: str | None = Field(
+        default=None, description="Hexadecimal color override for text color, without leading #"
+    )
     line_height_multiplier: float = Field(
         default=1.2, ge=1.0, le=2.5, description="Line height multiplier for text spacing."
     )
