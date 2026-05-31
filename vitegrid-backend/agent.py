@@ -1607,6 +1607,10 @@ def import_from_docx_blocks(docx_blocks: list[Any]) -> tuple[DocumentLayout, Aud
         list_level_indent_px = (getattr(b, 'list_level_indent_dxa', 0) or 0) * DXA_TO_PX
         list_hanging_indent_px = (getattr(b, 'list_hanging_indent_dxa', 0) or 0) * DXA_TO_PX
 
+        color = b.color_hex or "#000000"
+        if color and not color.startswith("#"):
+            color = f"#{color}"
+
         style = StyleTokens(
             font_family=b.font or "Arial",
             font_size_pt=b.size_pt or 11.0,
@@ -1615,7 +1619,7 @@ def import_from_docx_blocks(docx_blocks: list[Any]) -> tuple[DocumentLayout, Aud
             underline=getattr(b, 'underline', 'none'),
             underline_color_rgba=getattr(b, 'underline_color', None),
             strikethrough=getattr(b, 'strikethrough', False),
-            color_hex=b.color_hex or "000000",
+            color_hex=color,
             align=b.align or "left",
             list_level_indent_px=list_level_indent_px,
             list_hanging_indent_px=list_hanging_indent_px,

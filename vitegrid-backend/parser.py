@@ -441,9 +441,35 @@ def _docx_color(color: RGBColor | None) -> str | None:
     if color is None:
         return None
     try:
-        return f"#{color:06x}" if isinstance(color, int) else f"#{int(color):06x}"
-    except (TypeError, ValueError):
+        if isinstance(color, int):
+            return f"#{color:06x}"
+        elif hasattr(color, '__int__'):
+            return f"#{int(color):06x}"
+        else:
+            color_int = int(color)
+            return f"#{color_int:06x}"
+    except (TypeError, ValueError, AttributeError):
         return None
+
+
+def _extract_run_color(run: Any) -> str | None:
+    """Extract color from a run, with fallback to style"""
+    if not run:
+        return None
+
+    try:
+        if run.font.color and run.font.color.rgb:
+            return _docx_color(run.font.color.rgb)
+    except (AttributeError, TypeError):
+        pass
+
+    try:
+        if run.style and run.style.font and run.style.font.color:
+            return _docx_color(run.style.font.color.rgb)
+    except (AttributeError, TypeError):
+        pass
+
+    return None
 
 
 def _docx_alignment(value: Any) -> str | None:
@@ -617,9 +643,20 @@ def extract_docx_layout(docx_path: str | Path) -> list[DocxBlock]:
         text = para.text.strip()
         style_name = (para.style.name or "").lower() if para.style else ""
         first_run = next((r for r in para.runs if r.text.strip()), None)
-        font_name = first_run.font.name if first_run and first_run.font.name else None
-        size_pt = first_run.font.size.pt if first_run and first_run.font.size else None
-        color_hex = _docx_color(first_run.font.color.rgb) if first_run and first_run.font.color else None
+
+        font_name = None
+        if first_run and first_run.font.name:
+            font_name = first_run.font.name
+        elif para.style and para.style.font and para.style.font.name:
+            font_name = para.style.font.name
+
+        size_pt = None
+        if first_run and first_run.font.size:
+            size_pt = first_run.font.size.pt
+        elif para.style and para.style.font and para.style.font.size:
+            size_pt = para.style.font.size.pt
+
+        color_hex = _extract_run_color(first_run) if first_run else None
         bold = bool(first_run.bold) if first_run and first_run.bold is not None else "bold" in style_name
         italic = bool(first_run.italic) if first_run and first_run.italic is not None else False
         underline, underline_color = _docx_underline(first_run) if first_run else ("none", None)

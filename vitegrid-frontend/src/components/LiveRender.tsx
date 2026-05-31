@@ -12,9 +12,27 @@ const DXA_TO_PX = 96 / 1440;
 function styleToCss(block: DocumentBlock): React.CSSProperties {
   const s = block.style;
   const textDecorationLine = s.strikethrough ? "line-through" : s.underline !== "none" ? "underline" : undefined;
+
+  let colorValue = s.color_hex;
+  if (colorValue && !colorValue.startsWith("#")) {
+    colorValue = `#${colorValue}`;
+  }
+  if (!colorValue) {
+    colorValue = "#000000";
+  }
+
+  let bgColor = s.background_hex;
+  if (bgColor && bgColor !== "FFFFFF" && bgColor !== "#FFFFFF") {
+    if (!bgColor.startsWith("#")) {
+      bgColor = `#${bgColor}`;
+    }
+  } else {
+    bgColor = undefined;
+  }
+
   return {
-    color: s.color_hex,
-    backgroundColor: s.background_hex ?? undefined,
+    color: colorValue,
+    backgroundColor: bgColor,
     textAlign: s.align,
     fontFamily: s.font_family,
     fontSize: s.font_size_pt ? `${s.font_size_pt}pt` : undefined,
