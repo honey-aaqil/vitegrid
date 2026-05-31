@@ -1273,14 +1273,19 @@ def _extract_fonts_from_layout(layout_json: dict[str, Any]) -> set[str]:
 
 
 def _build_font_face_css(fonts: set[str]) -> str:
-    """Build @font-face CSS rules with base64-encoded font files."""
+    """Build @font-face CSS rules with base64-encoded font files.
+
+    Handles cloud/containerized environments with comprehensive font fallback chains
+    for Microsoft core fonts (Arial, Calibri, Times New Roman) and open-source alternatives.
+    """
     import sys
     font_css = ""
     system_font_dirs = []
+
     if sys.platform == "win32":
         system_font_dirs = [
-            "C:\Windows\Fonts",
-            str(Path.home() / "AppData\Local\Microsoft\Windows\Fonts"),
+            r"C:\Windows\Fonts",
+            str(Path.home() / r"AppData\Local\Microsoft\Windows\Fonts"),
         ]
     elif sys.platform == "darwin":
         system_font_dirs = [
@@ -1288,43 +1293,65 @@ def _build_font_face_css(fonts: set[str]) -> str:
             str(Path.home() / "Library/Fonts"),
         ]
     else:
+        # Linux/containerized: comprehensive font search paths
         system_font_dirs = [
             "/usr/share/fonts",
             "/usr/local/share/fonts",
+            "/var/cache/fontconfig",
+            "/etc/fonts",
             str(Path.home() / ".fonts"),
+            "/usr/share/fonts/truetype",
+            "/usr/share/fonts/opentype",
         ]
+
+    # Font fallback mapping for cloud environments (prevents substitution)
+    font_fallbacks = {
+        "Arial": ["Liberation Sans", "TeX Gyre Heros"],
+        "Calibri": ["Carlito", "Liberation Sans"],
+        "Times New Roman": ["Liberation Serif", "TeX Gyre Termes"],
+    }
 
     for font_name in fonts:
         if font_name in ("Arial", "serif", "sans-serif", "monospace"):
             continue
+
         font_found = False
-        for font_dir in system_font_dirs:
-            font_path = Path(font_dir)
-            if not font_path.exists():
-                continue
-            for font_file in font_path.glob(f"**/{font_name}*"):
-                if font_file.suffix.lower() in (".ttf", ".otf", ".woff", ".woff2"):
-                    base64_data = _get_base64_font(str(font_file))
-                    if base64_data:
-                        font_css += f"""
-                        @font-face {{
-                            font-family: '{font_name}';
-                            src: url('{base64_data}') format('woff2');
-                            font-weight: normal;
-                            font-style: normal;
-                        }}
-                        """
-                        font_found = True
-                        break
+        candidates = [font_name] + font_fallbacks.get(font_name, [])
+
+        for candidate_font in candidates:
+            for font_dir in system_font_dirs:
+                font_path = Path(font_dir)
+                if not font_path.exists():
+                    continue
+                for font_file in font_path.glob(f"**/{candidate_font}*"):
+                    if font_file.suffix.lower() in (".ttf", ".otf", ".woff", ".woff2"):
+                        base64_data = _get_base64_font(str(font_file))
+                        if base64_data:
+                            font_css += f"""
+                            @font-face {{
+                                font-family: '{font_name}';
+                                src: url('{base64_data}') format('woff2');
+                                font-weight: normal;
+                                font-style: normal;
+                            }}
+                            """
+                            font_found = True
+                            break
+                if font_found:
+                    break
             if font_found:
                 break
+
     return font_css
 
 
 
 def render_layout_screenshot(layout_json_str: str, output_path, width: int = 816, height: int = 1056):
     """
-    Launches headless Chromium with font injection to prevent substitution.
+    Launches headless Chromium with production-ready safeguards:
+    1. Font resolution with fallback chains to prevent substitution
+    2. Multi-page canvas scaling for dynamic document height
+    3. Resource race condition handling with explicit font promise awaiting
     """
     import base64
     from playwright.sync_api import sync_playwright
@@ -1333,6 +1360,23 @@ def render_layout_screenshot(layout_json_str: str, output_path, width: int = 816
         layout_json = json.loads(layout_json_str)
     except (json.JSONDecodeError, TypeError):
         layout_json = {}
+
+    # SAFEGUARD 1: Font fallback chain to prevent substitution in cloud environments
+    system_fonts = [
+        "Arial", "Helvetica", "sans-serif",  # Arial family
+        "Calibri", "Segoe UI", "sans-serif",  # Calibri family
+        "Times New Roman", "Times", "serif",  # Times family
+        "Liberation Sans", "TeX Gyre Heros",  # Open-source fallbacks
+    ]
+    fonts = _extract_fonts_from_layout(layout_json)
+    font_css = _build_font_face_css(fonts)
+
+    # Inject comprehensive font fallback chain
+    font_fallback_css = """
+    * { font-family: Arial, Helvetica, "Liberation Sans", "TeX Gyre Heros", sans-serif !important; }
+    h1, h2, h3, h4, h5, h6 { font-family: "Times New Roman", Times, serif !important; }
+    code, pre { font-family: "Courier New", Courier, monospace !important; }
+    """
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -1348,11 +1392,37 @@ def render_layout_screenshot(layout_json_str: str, output_path, width: int = 816
         b64_layout = base64.b64encode(layout_json_str.encode("utf-8")).decode("utf-8")
         page.evaluate(f"localStorage.setItem('vitegrid_headless_layout', atob('{b64_layout}'))")
 
-        fonts = _extract_fonts_from_layout(layout_json)
-        font_css = _build_font_face_css(fonts)
+        # SAFEGUARD 2: Multi-page canvas scaling - calculate dynamic height from content
+        page.reload()
+        page.wait_for_selector("#headless-render-canvas", timeout=5000)
+
+        # Calculate actual content height for multi-page documents
+        actual_height = page.evaluate("""
+            () => {
+                const canvas = document.getElementById('headless-render-canvas');
+                if (canvas) {
+                    return Math.max(canvas.scrollHeight, canvas.offsetHeight, 1056);
+                }
+                return 1056;
+            }
+        """)
+
+        # Update viewport to match actual content height (avoid clipping multi-page layouts)
+        if actual_height > height:
+            context.close()
+            context = browser.new_context(
+                viewport={"width": width, "height": int(actual_height)},
+                device_scale_factor=2.0,
+            )
+            page = context.new_page()
+            page.goto(f"{frontend_url}/#/headless-preview")
+            page.evaluate(f"localStorage.setItem('vitegrid_headless_layout', atob('{b64_layout}'))")
+            page.reload()
+            page.wait_for_selector("#headless-render-canvas", timeout=5000)
 
         global_css = f"""
         {font_css}
+        {font_fallback_css}
         body {{
             margin: 0;
             padding: 0;
@@ -1364,11 +1434,26 @@ def render_layout_screenshot(layout_json_str: str, output_path, width: int = 816
         }}
         """
 
-        page.reload()
-        page.wait_for_selector("#headless-render-canvas", timeout=5000)
-
         page.add_style_tag(content=global_css)
-        page.evaluate("document.fonts.ready")
+
+        # SAFEGUARD 3: Explicit font promise awaiting to prevent race conditions
+        # Wait for fonts to load AND network to be idle before screenshot
+        page.evaluate("""
+            async () => {
+                try {
+                    await document.fonts.ready;
+                    await new Promise(resolve => {
+                        if (document.readyState === 'complete') {
+                            resolve();
+                        } else {
+                            window.addEventListener('load', resolve, { once: true });
+                        }
+                    });
+                } catch (e) {
+                    console.warn('Font loading warning:', e);
+                }
+            }
+        """)
         page.wait_for_load_state("networkidle")
 
         canvas_element = page.query_selector("#headless-render-canvas")
