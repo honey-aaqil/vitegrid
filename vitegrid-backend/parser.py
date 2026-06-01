@@ -1466,7 +1466,22 @@ def render_layout_screenshot(layout_json_str: str, output_path, width: int = 816
         else:
             page.screenshot(path=str(output_path))
 
+        # Capture visual block heights for layout optimization feedback
+        actual_heights = page.evaluate("""
+            () => {
+                const heights = {};
+                const elements = document.querySelectorAll('[data-block-id]');
+                for (const el of elements) {
+                    const id = el.getAttribute('data-block-id');
+                    const rect = el.getBoundingClientRect();
+                    heights[id] = rect.height;
+                }
+                return heights;
+            }
+        """)
+
         browser.close()
+        return actual_heights
 
 
 

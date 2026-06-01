@@ -378,6 +378,21 @@ def case_none_coercion_to_defaults() -> None:
     )
 
 
+def case_color_standardization() -> None:
+    print("\n=== Color hex standardization ===")
+    s1 = StyleTokens(color_hex="#ff0011")
+    expect("color_hex leading # stripped", s1.color_hex == "ff0011")
+
+    s2 = StyleTokens(background_hex="rgba(128, 0, 255, 0.5)")
+    expect("rgba string converted to clean hex", s2.background_hex == "8000ff")
+
+    s3 = StyleTokens(background_hex=" rgb ( 255 , 255 , 255 ) ")
+    expect("rgb string converted to clean hex", s3.background_hex == "ffffff")
+
+    s4 = StyleTokens(background_hex="none")
+    expect("none background mapped to None", s4.background_hex is None)
+
+
 def case_markdown_text_runs() -> None:
     print("\n=== _markdown_text_runs ===")
     runs = agent._markdown_text_runs(
@@ -403,6 +418,7 @@ if __name__ == "__main__":
     case_merge_reports()
     case_none_coercion_to_defaults()
     case_markdown_text_runs()
+    case_color_standardization()
     print()
     if _failures:
         print(f"FAIL: {len(_failures)} failures")

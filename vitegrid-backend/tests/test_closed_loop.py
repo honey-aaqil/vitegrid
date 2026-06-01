@@ -33,6 +33,7 @@ from agent import (
     LayoutRefinementPatches,
     StyleTokens,
     BoundingBox,
+    CSSSpacing,
 )
 
 _failures: list[str] = []
@@ -154,11 +155,11 @@ def case_closed_loop_optimization() -> None:
             diagnostics="Test run refinement",
             patches=[
                 BlockStylePatch(
-                    block_id="block-0",
-                    font_size_change_pt=2.0,
-                    align_patch="center",
-                    font_weight_patch="bold",
-                    margin_top_shift_px=10,
+                    element_id="block-0",
+                    font_size_pt=14.0,
+                    text_align="center",
+                    font_weight="bold",
+                    margin=CSSSpacing(top_px=10.0),
                 )
             ]
         )

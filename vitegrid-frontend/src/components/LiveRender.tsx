@@ -30,6 +30,31 @@ function styleToCss(block: DocumentBlock): React.CSSProperties {
     bgColor = undefined;
   }
 
+  let borderTop = undefined;
+  let borderBottom = undefined;
+  let borderLeft = undefined;
+  let borderRight = undefined;
+
+  if (s.line_alignment && s.line_alignment !== "none") {
+    const thickness = `${s.line_thickness_px ?? 1}px`;
+    let color = s.line_color_hex ?? "000000";
+    if (!color.startsWith("#")) {
+      color = `#${color}`;
+    }
+    const borderStr = `${thickness} solid ${color}`;
+
+    if (s.line_alignment === "top") borderTop = borderStr;
+    else if (s.line_alignment === "bottom") borderBottom = borderStr;
+    else if (s.line_alignment === "left") borderLeft = borderStr;
+    else if (s.line_alignment === "right") borderRight = borderStr;
+    else if (s.line_alignment === "all") {
+      borderTop = borderStr;
+      borderBottom = borderStr;
+      borderLeft = borderStr;
+      borderRight = borderStr;
+    }
+  }
+
   return {
     color: colorValue,
     backgroundColor: bgColor || undefined,
@@ -44,6 +69,10 @@ function styleToCss(block: DocumentBlock): React.CSSProperties {
     letterSpacing: s.letter_spacing_px ? `${s.letter_spacing_px}px` : undefined,
     wordSpacing: s.word_spacing_px ? `${s.word_spacing_px}px` : undefined,
     whiteSpace: "pre-wrap",
+    borderTop,
+    borderBottom,
+    borderLeft,
+    borderRight,
   };
 }
 
@@ -75,13 +104,13 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
     switch (block.type) {
     case "heading":
       return (
-        <h2 style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom }}>
+        <h2 style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, padding: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom }}>
           {block.text}
         </h2>
       );
     case "paragraph":
       return (
-        <p style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom }}>
+        <p style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, padding: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom }}>
           {block.text}
         </p>
       );
@@ -96,6 +125,7 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
           style={{
             ...cleanCss,
             margin: hasAbsoluteGeometry ? 0 : undefined,
+            padding: hasAbsoluteGeometry ? 0 : undefined,
             marginTop: hasAbsoluteGeometry ? 0 : margin_top,
             marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom,
             paddingLeft: effectivePaddingLeft,
@@ -128,7 +158,7 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
       const tableRows = block.table_cells || (block.rows?.map((row) => row.map((text) => ({ text, col_span: 1, row_span: 1, padding_top_px: 8, padding_bottom_px: 8, padding_left_px: 12, padding_right_px: 12, vertical_align: "top" as const }))) ?? []);
 
       return (
-        <table style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom, width: "100%", borderCollapse: "collapse" }}>
+        <table style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, padding: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom, width: "100%", borderCollapse: "collapse" }}>
           <tbody>
             {tableRows.map((row, r) => (
               <tr key={r}>
@@ -196,6 +226,24 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
       );
     }
     case "divider": {
+      // If line_alignment is specified, styleToCss already maps it to clean CSS borders on cleanCss.
+      // So we just render a container div with cleanCss.
+      if (block.style.line_alignment && block.style.line_alignment !== "none") {
+        return (
+          <div
+            style={{
+              ...cleanCss,
+              margin: hasAbsoluteGeometry ? 0 : undefined,
+              marginTop: hasAbsoluteGeometry ? 0 : margin_top,
+              marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom,
+              width: "100%",
+              height: "100%",
+              boxSizing: "border-box",
+            }}
+          />
+        );
+      }
+
       let dividerColor = block.style.border_color_rgba;
       if (!dividerColor && block.style.color_hex) {
         dividerColor = block.style.color_hex.startsWith("#")
@@ -236,7 +284,7 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
     }
   };
 
-  return <div style={wrapperStyle}>{renderInnerContent()}</div>;
+  return <div style={wrapperStyle} data-block-id={block.id}>{renderInnerContent()}</div>;
 }
 
 export function LiveRender({ layout, blocks }: Props) {

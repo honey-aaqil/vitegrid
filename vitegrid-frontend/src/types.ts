@@ -41,6 +41,9 @@ export interface StyleTokens {
   border_style?: "none" | "solid" | "dashed" | "dotted" | "double";
   border_width_px?: number;
   border_color_rgba?: string;
+  line_alignment?: "top" | "bottom" | "left" | "right" | "all" | "none";
+  line_thickness_px?: number;
+  line_color_hex?: string;
   cell_padding_dxa: CellPaddingDxa;
   list_format: ListFormat;
   list_level: number;

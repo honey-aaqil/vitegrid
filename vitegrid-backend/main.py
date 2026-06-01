@@ -423,12 +423,16 @@ async def stream_document_reconstruction(
                         diff_path = work_dir / f"diff_{iteration}.png"
 
                         try:
-                            render_layout_screenshot(
+                            actual_heights = render_layout_screenshot(
                                 current_layout.model_dump_json(),
                                 cand_path,
                                 width=int(current_layout.page_width_px),
                                 height=int(current_layout.page_height_px),
                             )
+                            if isinstance(actual_heights, dict):
+                                for block in current_layout.blocks:
+                                    if block.id in actual_heights and block.bbox:
+                                        block.bbox.height_px = actual_heights[block.id]
                         except Exception as e:
                             return f"Render failed at iteration {iteration}: {e}"
 

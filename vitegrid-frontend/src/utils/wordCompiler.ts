@@ -409,10 +409,247 @@ export async function compileToDocx(layout: DocumentLayout): Promise<Blob> {
   const marginLeftDxa = pxToDxa(layout.margin_px.left);
   const contentWidthDxa = Math.max(1, pageWidthDxa - marginLeftDxa - marginRightDxa);
 
-  const childrenLists = await Promise.all(
-    layout.blocks.map((block) => blockToChildren(block, contentWidthDxa)),
-  );
-  const children = childrenLists.flat();
+  const contentLeft = layout.margin_px.left;
+  const contentRight = layout.page_width_px - layout.margin_px.right;
+
+  // Gather unique X coordinates to define fixed grid columns
+  const xCoords: number[] = [contentLeft, contentRight];
+  for (const block of layout.blocks) {
+    if (block.bbox && block.bbox.width_px > 0 && block.bbox.height_px > 0) {
+      xCoords.push(block.bbox.x_px);
+      xCoords.push(block.bbox.x_px + block.bbox.width_px);
+    }
+  }
+
+  xCoords.sort((a, b) => a - b);
+  const uniqueX: number[] = [];
+  for (const x of xCoords) {
+    const clampedX = Math.max(contentLeft, Math.min(contentRight, x));
+    if (uniqueX.length === 0) {
+      uniqueX.push(clampedX);
+    } else {
+      const last = uniqueX[uniqueX.length - 1];
+      if (clampedX - last >= 15) {
+        uniqueX.push(clampedX);
+      }
+    }
+  }
+  if (uniqueX[uniqueX.length - 1] < contentRight - 5) {
+    uniqueX.push(contentRight);
+  }
+
+  const numCols = uniqueX.length - 1;
+  const colWidths = Array(numCols).fill(0);
+  const colWidthsDxa = Array(numCols).fill(0);
+  for (let c = 0; c < numCols; c++) {
+    colWidths[c] = uniqueX[c + 1] - uniqueX[c];
+    colWidthsDxa[c] = pxToDxa(colWidths[c]);
+  }
+
+  // Adjust column widths to sum exactly to contentWidthDxa
+  const sumDxa = colWidthsDxa.reduce((a, b) => a + b, 0);
+  const drift = contentWidthDxa - sumDxa;
+  if (drift !== 0 && numCols > 0) {
+    colWidthsDxa[numCols - 1] += drift;
+  }
+
+  // Find dominant background shading fill for each column to enable full-column panels
+  const columnShading = Array(numCols).fill(null);
+  for (const block of layout.blocks) {
+    if (block.bbox && block.bbox.width_px > 0 && block.style.background_hex) {
+      const bx0 = block.bbox.x_px;
+      const bx1 = block.bbox.x_px + block.bbox.width_px;
+      for (let c = 0; c < numCols; c++) {
+        if (bx0 <= uniqueX[c] + 5 && bx1 >= uniqueX[c + 1] - 5) {
+          columnShading[c] = block.style.background_hex.replace("#", "");
+        }
+      }
+    }
+  }
+
+  // Group blocks into rows based on vertical overlap and horizontal layout tracks
+  interface GridRow {
+    yStart: number;
+    yEnd: number;
+    blocks: DocumentBlock[];
+  }
+
+  const sortedBlocks = [...layout.blocks].sort((a, b) => {
+    const ay = a.bbox ? a.bbox.y_px : 0;
+    const by = b.bbox ? b.bbox.y_px : 0;
+    return ay - by;
+  });
+
+  const rows: GridRow[] = [];
+  for (const block of sortedBlocks) {
+    const bbox = block.bbox || {
+      x_px: contentLeft,
+      y_px: 0,
+      width_px: contentRight - contentLeft,
+      height_px: 30,
+    };
+    const yStart = bbox.y_px;
+    const yEnd = bbox.y_px + bbox.height_px;
+
+    let placed = false;
+    for (const row of rows) {
+      // Check horizontal overlap with blocks already in this row
+      let hasHOverlap = false;
+      for (const existing of row.blocks) {
+        const eBbox = existing.bbox || {
+          x_px: contentLeft,
+          width_px: contentRight - contentLeft,
+        };
+        const overlap_left = Math.max(bbox.x_px, eBbox.x_px);
+        const overlap_right = Math.min(
+          bbox.x_px + bbox.width_px,
+          eBbox.x_px + eBbox.width_px
+        );
+        if (overlap_right - overlap_left > 10) {
+          hasHOverlap = true;
+          break;
+        }
+      }
+
+      // Vertical overlap check
+      const vOverlap = Math.min(yEnd, row.yEnd) - Math.max(yStart, row.yStart);
+      if (!hasHOverlap && vOverlap > -10) {
+        row.blocks.push(block);
+        row.yStart = Math.min(row.yStart, yStart);
+        row.yEnd = Math.max(row.yEnd, yEnd);
+        placed = true;
+        break;
+      }
+    }
+
+    if (!placed) {
+      rows.push({ yStart, yEnd, blocks: [block] });
+    }
+  }
+
+  rows.sort((a, b) => a.yStart - b.yStart);
+
+  const docxRows: TableRow[] = [];
+
+  const noBorder = {
+    style: BorderStyle.NONE,
+    size: 0,
+    color: "auto",
+  };
+
+  for (const row of rows) {
+    const rowCells: TableCell[] = [];
+    let c = 0;
+    while (c < numCols) {
+      // Find block covering this column
+      const block = row.blocks.find((b) => {
+        if (!b.bbox) return false;
+        const bx0 = b.bbox.x_px;
+        const bx1 = b.bbox.x_px + b.bbox.width_px;
+        return bx0 <= uniqueX[c] + 5 && bx1 >= uniqueX[c + 1] - 5;
+      });
+
+      if (block) {
+        // Calculate colSpan
+        let colSpan = 1;
+        if (block.bbox) {
+          const bx1 = block.bbox.x_px + block.bbox.width_px;
+          while (c + colSpan < numCols && uniqueX[c + colSpan + 1] <= bx1 + 5) {
+            colSpan++;
+          }
+        }
+
+        const cellWidthDxa = colWidthsDxa
+          .slice(c, c + colSpan)
+          .reduce((sum, w) => sum + w, 0);
+
+        const blockChildren = await blockToChildren(block, cellWidthDxa);
+
+        // Apply background shading
+        let shadingFill = columnShading[c] || undefined;
+        if (block.style.background_hex) {
+          shadingFill = block.style.background_hex.replace("#", "");
+        }
+
+        // Apply borders (native paragraph border rules / line alignment / tables)
+        let cellBorders: any = {
+          top: noBorder,
+          bottom: noBorder,
+          left: noBorder,
+          right: noBorder,
+        };
+
+        if (block.style.line_alignment && block.style.line_alignment !== "none") {
+          const alignment = block.style.line_alignment;
+          const thickness = block.style.line_thickness_px ?? 1;
+          const size = Math.max(1, Math.min(24, Math.round(thickness * 8)));
+          let color = block.style.line_color_hex || "000000";
+          color = color.replace("#", "");
+
+          const borderOpts = {
+            style: BorderStyle.SINGLE,
+            size,
+            color,
+          };
+
+          if (alignment === "top" || alignment === "all") cellBorders.top = borderOpts;
+          if (alignment === "bottom" || alignment === "all") cellBorders.bottom = borderOpts;
+          if (alignment === "left" || alignment === "all") cellBorders.left = borderOpts;
+          if (alignment === "right" || alignment === "all") cellBorders.right = borderOpts;
+        }
+
+        rowCells.push(
+          new TableCell({
+            width: { size: cellWidthDxa, type: WidthType.DXA },
+            columnSpan: colSpan > 1 ? colSpan : undefined,
+            shading: shadingFill ? { fill: shadingFill } : undefined,
+            borders: cellBorders,
+            margins: {
+              top: 0,
+              bottom: 0,
+              left: 0,
+              right: 0,
+              marginUnitType: WidthType.DXA,
+            },
+            children: blockChildren.length > 0 ? blockChildren : [new Paragraph({})],
+          })
+        );
+        c += colSpan;
+      } else {
+        // Empty Cell
+        rowCells.push(
+          new TableCell({
+            width: { size: colWidthsDxa[c], type: WidthType.DXA },
+            shading: columnShading[c] ? { fill: columnShading[c] } : undefined,
+            borders: {
+              top: noBorder,
+              bottom: noBorder,
+              left: noBorder,
+              right: noBorder,
+            },
+            margins: {
+              top: 0,
+              bottom: 0,
+              left: 0,
+              right: 0,
+              marginUnitType: WidthType.DXA,
+            },
+            children: [new Paragraph({})],
+          })
+        );
+        c++;
+      }
+    }
+
+    docxRows.push(new TableRow({ children: rowCells }));
+  }
+
+  const masterTable = new Table({
+    width: { size: contentWidthDxa, type: WidthType.DXA },
+    columnWidths: colWidthsDxa,
+    layout: TableLayoutType.FIXED,
+    rows: docxRows,
+  });
 
   const doc = new Document({
     numbering: NUMBERING_CONFIG,
@@ -429,7 +666,7 @@ export async function compileToDocx(layout: DocumentLayout): Promise<Blob> {
             },
           },
         },
-        children,
+        children: [masterTable],
       },
     ],
   });

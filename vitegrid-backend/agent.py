@@ -93,6 +93,28 @@ class SpacingTokens(BaseModel):
         return _coerce_nones_to_defaults(cls, data)
 
 
+def _standardize_hex_color(color: str | None) -> str | None:
+    if not color:
+        return None
+    # Strip any leading '#' or spacing
+    color = color.strip().replace("#", "")
+    # Check if it starts with 'rgba' or 'rgb'
+    if color.lower().startswith("rgb"):
+        # Extract numbers
+        m = re.findall(r"\d+", color)
+        if len(m) >= 3:
+            r = int(m[0])
+            g = int(m[1])
+            b = int(m[2])
+            return f"{r:02x}{g:02x}{b:02x}"
+    # Keep only alphanumeric characters
+    color = "".join(c for c in color if c.isalnum())
+    # If 8-character hex (with alpha), trim to 6
+    if len(color) == 8:
+        color = color[:6]
+    return color if len(color) in (3, 6) else None
+
+
 class StyleTokens(BaseModel):
     font_family: str = Field(default="Arial", description="Primary mapped font family name.")
     font_size_pt: float = Field(default=11.0, description="Absolute font size in points.")
@@ -131,6 +153,11 @@ class StyleTokens(BaseModel):
     border_color_rgba: str = Field(
         default="rgba(0,0,0,1)", description="Border color in RGBA format."
     )
+    line_alignment: Literal["top", "bottom", "left", "right", "all", "none"] = Field(
+        default="none", description="Border/line alignment."
+    )
+    line_thickness_px: float = Field(default=1.0, description="Border/line thickness in pixels.")
+    line_color_hex: str = Field(default="000000", description="Border/line color hex.")
     cell_padding_dxa: dict[str, int] = Field(
         default_factory=_default_cell_padding_dxa,
         description="Explicit cell margins in twips/dxa: keys top/bottom/left/right.",
@@ -148,7 +175,15 @@ class StyleTokens(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _allow_none_in_strict_fields(cls, data: Any) -> Any:
+    def _validate_colors_and_defaults(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Standardize colors
+            if "color_hex" in data and data["color_hex"] is not None:
+                data["color_hex"] = _standardize_hex_color(data["color_hex"])
+            if "background_hex" in data and data["background_hex"] is not None:
+                data["background_hex"] = _standardize_hex_color(data["background_hex"])
+            if "line_color_hex" in data and data["line_color_hex"] is not None:
+                data["line_color_hex"] = _standardize_hex_color(data["line_color_hex"])
         return _coerce_nones_to_defaults(cls, data)
 
 
@@ -1214,7 +1249,7 @@ def _dominant_style(span_indices: list[int], spans: list[Any]) -> StyleTokens:
     used = [spans[i] for i in span_indices if 0 <= i < len(spans)]
     if not used:
         return StyleTokens()
-    sizes = [s.size_pt for s in used if s.size_pt]
+    sizes = [max(4.5, s.size_pt) if s.size_pt else 11.0 for s in used]
     fonts = [s.font for s in used if s.font]
     colors = [s.color_hex for s in used if s.color_hex]
     weights = ["bold" if s.bold else "normal" for s in used]
@@ -1701,7 +1736,7 @@ def import_from_classified_blocks(
         )
         style = StyleTokens(
             font_family=c.font,
-            font_size_pt=c.size_pt,
+            font_size_pt=max(4.5, c.size_pt) if c.size_pt else 11.0,
             font_weight="bold" if c.bold else "normal",
             color_hex=c.color_hex,
             align=c.align,
@@ -2054,12 +2089,16 @@ def optimize_template_closed_loop(
 
         # Step A: Capture the visual layout preview screenshot
         try:
-            render_layout_screenshot(
+            actual_heights = render_layout_screenshot(
                 current_layout.model_dump_json(),
                 cand_path,
                 width=int(current_layout.page_width_px),
                 height=int(current_layout.page_height_px),
             )
+            if isinstance(actual_heights, dict):
+                for block in current_layout.blocks:
+                    if block.id in actual_heights and block.bbox:
+                        block.bbox.height_px = actual_heights[block.id]
         except Exception as err:
             print(f"[Closed-Loop] iter {iteration} render failed: {err}")
             break
