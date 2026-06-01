@@ -306,6 +306,37 @@ async function blockToChildren(
         return [new Paragraph({ children: [textRun("[missing image]", block.style)] })];
       }
     }
+    case "divider": {
+      let color = "777777";
+      if (block.style.color_hex) {
+        color = block.style.color_hex.replace("#", "");
+      }
+      if (block.style.border_color_rgba) {
+        const m = block.style.border_color_rgba.match(/\d+/g);
+        if (m && m.length >= 3) {
+          const r = parseInt(m[0], 10);
+          const g = parseInt(m[1], 10);
+          const b = parseInt(m[2], 10);
+          color = ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+        }
+      }
+      const borderWidth = block.style.border_width_px ?? 1;
+      const borderSize = Math.max(1, Math.min(24, Math.round(borderWidth * 8))); // docx border size is in 1/8 pt
+
+      return [
+        new Paragraph({
+          spacing: { before: 120, after: 120 },
+          border: {
+            bottom: {
+              color,
+              space: 1,
+              size: borderSize,
+              style: BorderStyle.SINGLE,
+            },
+          },
+        }),
+      ];
+    }
   }
 }
 

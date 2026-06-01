@@ -195,6 +195,44 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
         </div>
       );
     }
+    case "divider": {
+      let dividerColor = block.style.border_color_rgba;
+      if (!dividerColor && block.style.color_hex) {
+        dividerColor = block.style.color_hex.startsWith("#")
+          ? block.style.color_hex
+          : `#${block.style.color_hex}`;
+      }
+      if (!dividerColor) {
+        dividerColor = "rgba(0, 0, 0, 0.5)";
+      }
+
+      const borderWidth = block.style.border_width_px ?? 1;
+      const borderStyle = block.style.border_style ?? "solid";
+
+      return (
+        <div
+          style={{
+            ...cleanCss,
+            margin: hasAbsoluteGeometry ? 0 : undefined,
+            marginTop: hasAbsoluteGeometry ? 0 : margin_top,
+            marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom,
+            display: "flex",
+            alignItems: "center",
+            width: "100%",
+            height: "100%",
+          }}
+        >
+          <hr
+            style={{
+              border: "none",
+              borderTop: `${borderWidth}px ${borderStyle} ${dividerColor}`,
+              margin: 0,
+              width: "100%",
+            }}
+          />
+        </div>
+      );
+    }
     }
   };
 

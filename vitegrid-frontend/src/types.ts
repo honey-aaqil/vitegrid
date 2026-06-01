@@ -3,7 +3,8 @@ export type BlockType =
   | "paragraph"
   | "list"
   | "table"
-  | "image_placeholder";
+  | "image_placeholder"
+  | "divider";
 
 export type LockTier = 1 | 2 | 3;
 

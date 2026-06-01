@@ -54,6 +54,7 @@ class BlockType(str, Enum):
     LIST = "list"
     TABLE = "table"
     IMAGE_PLACEHOLDER = "image_placeholder"
+    DIVIDER = "divider"
 
 
 class ListFormat(str, Enum):
@@ -944,6 +945,8 @@ def _estimate_block_height(block: DocumentBlock, content_width: float) -> float:
         return max(1, rows) * 28 + 8
     if block.type == BlockType.IMAGE_PLACEHOLDER:
         return 220
+    if block.type == BlockType.DIVIDER:
+        return 8.0
     return 32
 
 
@@ -1130,8 +1133,8 @@ Your ONLY job: group the spans into semantic blocks and label each block's
 type. NEVER emit the text content yourself; refer to spans by their index.
 
 For each block on the page emit a _BlockProposal:
-- block_type: one of "heading" | "paragraph" | "list" | "table" | "image_placeholder"
-- span_indices: ordered list of span indices for heading or paragraph blocks
+- block_type: one of "heading" | "paragraph" | "list" | "table" | "image_placeholder" | "divider"
+- span_indices: ordered list of span indices for heading, paragraph, or divider blocks
 - list_items: ONE inner list of span indices per bullet/numbered item (used for list blocks)
 - table_rows: rows -> columns -> spans (used for table blocks)
 - align: "left" | "center" | "right" | "justify" inferred from x-coordinates
@@ -1147,6 +1150,7 @@ Rules:
   headers. DO NOT use "table" for multi-column layout text, key-value pairs,
   or resume skill sections. If text is simply aligned in invisible columns
   without gridlines, you MUST classify it as a "list" or a "paragraph".
+- A divider is a horizontal rule/line or visual separator. Group spans that form a divider line (such as dashes or underscores) into a divider block.
 - Output blocks in TOP-TO-BOTTOM reading order.
 - EVERY non-noise span index from the input MUST appear in some block's span_indices,
   list_items, or table_rows. Do not drop content.
@@ -1222,17 +1226,36 @@ def _dominant_style(span_indices: list[int], spans: list[Any]) -> StyleTokens:
     )
 
 
-def _proposal_to_block(prop: _BlockProposal, spans: list[Any], block_id: str) -> DocumentBlock:
+def _proposal_to_block(
+    prop: _BlockProposal, spans: list[Any], block_id: str, scale: float = 1.0
+) -> DocumentBlock:
+    def _get_spans_bbox_union(span_indices: list[int], spans: list[Any], scale: float) -> BoundingBox | None:
+        valid_spans = [spans[i] for i in span_indices if 0 <= i < len(spans) and spans[i].bbox]
+        if not valid_spans:
+            return None
+        x0 = min(s.bbox[0] for s in valid_spans)
+        y0 = min(s.bbox[1] for s in valid_spans)
+        x1 = max(s.bbox[2] for s in valid_spans)
+        y1 = max(s.bbox[3] for s in valid_spans)
+        return BoundingBox(
+            x_px=float(x0 * scale),
+            y_px=float(y0 * scale),
+            width_px=float((x1 - x0) * scale),
+            height_px=float((y1 - y0) * scale),
+        )
+
     if prop.block_type == BlockType.LIST:
         items = [_assemble_text_from_spans(ids, spans) for ids in prop.list_items]
         items = [it for it in items if it]
         all_indices = [i for sub in prop.list_items for i in sub]
         style = _dominant_style(all_indices, spans)
         style.align = prop.align
+        bbox = _get_spans_bbox_union(all_indices, spans, scale)
         return DocumentBlock(
             id=block_id,
             type=BlockType.LIST,
             items=items,
+            bbox=bbox,
             style=style,
         )
     if prop.block_type == BlockType.TABLE:
@@ -1249,19 +1272,34 @@ def _proposal_to_block(prop: _BlockProposal, spans: list[Any], block_id: str) ->
         style = _dominant_style(all_indices, spans)
         style.align = prop.align
         style.border_visible = True
+        bbox = _get_spans_bbox_union(all_indices, spans, scale)
         return DocumentBlock(
             id=block_id,
             type=BlockType.TABLE,
             rows=rows,
             table_cells=table_cells,
+            bbox=bbox,
             style=style,
         )
     if prop.block_type == BlockType.IMAGE_PLACEHOLDER:
-        return DocumentBlock(id=block_id, type=BlockType.IMAGE_PLACEHOLDER, style=StyleTokens())
+        all_indices = prop.span_indices or []
+        bbox = _get_spans_bbox_union(all_indices, spans, scale) if all_indices else None
+        return DocumentBlock(id=block_id, type=BlockType.IMAGE_PLACEHOLDER, bbox=bbox, style=StyleTokens())
+    if prop.block_type == BlockType.DIVIDER:
+        all_indices = prop.span_indices or []
+        style = _dominant_style(all_indices, spans) if all_indices else StyleTokens()
+        bbox = _get_spans_bbox_union(all_indices, spans, scale) if all_indices else None
+        return DocumentBlock(
+            id=block_id,
+            type=BlockType.DIVIDER,
+            bbox=bbox,
+            style=style,
+        )
     text = _assemble_text_from_spans(prop.span_indices, spans)
     style = _dominant_style(prop.span_indices, spans)
     style.align = prop.align
-    return DocumentBlock(id=block_id, type=prop.block_type, text=text, style=style)
+    bbox = _get_spans_bbox_union(prop.span_indices, spans, scale)
+    return DocumentBlock(id=block_id, type=prop.block_type, text=text, bbox=bbox, style=style)
 
 
 def agent5_label_page(page_image: bytes, spans: list[Any], page_index: int) -> _PageGrouping:
@@ -1300,6 +1338,7 @@ def import_from_pdf_extraction(extraction: Any) -> tuple[DocumentLayout, AuditRe
     counter = 0
     page_width_pt = extraction.pages[0].page_width_pt if extraction.pages else 612.0
     page_height_pt = extraction.pages[0].page_height_pt if extraction.pages else 792.0
+    scale = 816.0 / page_width_pt if page_width_pt else 1.0
 
     if extraction.is_scanned:
         layout = agent5_vision_only_scanned([p.image_bytes for p in extraction.pages])
@@ -1310,7 +1349,7 @@ def import_from_pdf_extraction(extraction: Any) -> tuple[DocumentLayout, AuditRe
             for prop in grouping.blocks:
                 block_id = f"block-{counter}"
                 counter += 1
-                block = _proposal_to_block(prop, page.spans, block_id)
+                block = _proposal_to_block(prop, page.spans, block_id, scale)
                 blocks.append(block)
                 covered.update(prop.span_indices)
                 for item in prop.list_items:
@@ -1321,11 +1360,20 @@ def import_from_pdf_extraction(extraction: Any) -> tuple[DocumentLayout, AuditRe
             missing = [i for i in range(len(page.spans)) if i not in covered and page.spans[i].text.strip()]
             for idx in missing:
                 span = page.spans[idx]
+                bbox = None
+                if span.bbox:
+                    bbox = BoundingBox(
+                        x_px=float(span.bbox[0] * scale),
+                        y_px=float(span.bbox[1] * scale),
+                        width_px=float((span.bbox[2] - span.bbox[0]) * scale),
+                        height_px=float((span.bbox[3] - span.bbox[1]) * scale),
+                    )
                 blocks.append(
                     DocumentBlock(
                         id=f"block-{counter}",
                         type=BlockType.PARAGRAPH,
                         text=span.text,
+                        bbox=bbox,
                         style=StyleTokens(
                             font_family=span.font or None,
                             font_size_pt=span.size_pt or None,
@@ -1339,7 +1387,6 @@ def import_from_pdf_extraction(extraction: Any) -> tuple[DocumentLayout, AuditRe
             (b.text for b in blocks if b.type == BlockType.HEADING and b.text), None
         )
         title = first_heading or "Imported Document"
-        scale = 816.0 / page_width_pt if page_width_pt else 1.0
         page_w = round(page_width_pt * scale)
         page_h = round(page_height_pt * scale)
         layout = DocumentLayout(
@@ -1370,6 +1417,7 @@ Identify EVERY structural element visible in the image, including:
     lines, decorative separators, header/footer rules, alignment guides.
   * Background fills and border rectangles behind text.
   * Image regions: emit as `image_placeholder` blocks with their bbox.
+  * Solid lines, decorative lines, and visual horizontal separators: emit as `divider` blocks with their bbox.
 For each element, emit a precise bbox in WEB PIXELS at 96 DPI:
   bbox = { "x_px": <float>, "y_px": <float>,
            "width_px": <float>, "height_px": <float> }

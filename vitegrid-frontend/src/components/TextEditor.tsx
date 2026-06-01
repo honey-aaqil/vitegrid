@@ -11,6 +11,7 @@ const TYPE_LABEL: Record<DocumentBlock["type"], string> = {
   list: "List",
   table: "Table",
   image_placeholder: "Image",
+  divider: "Divider",
 };
 
 export function TextEditor({ blocks, onChange }: Props) {
@@ -80,6 +81,11 @@ export function TextEditor({ blocks, onChange }: Props) {
             {block.type === "image_placeholder" && (
               <p className="text-xs text-muted">
                 Image block · use the AI chat to attach an image or change dimensions.
+              </p>
+            )}
+            {block.type === "divider" && (
+              <p className="text-xs text-muted">
+                Divider line · use the layout patch inputs to modify its style.
               </p>
             )}
           </div>
