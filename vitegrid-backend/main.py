@@ -474,13 +474,44 @@ async def stream_document_reconstruction(
                                     if patch.line_height_multiplier and patch.line_height_multiplier > 1.0:
                                         target_block.spacing.line_height_px = target_block.style.font_size_pt * patch.line_height_multiplier
 
-                                    # 2. Convert and Apply Background Shading Colors
+                                    # 2. Apply Typographic Styling (Fix 3)
+                                    if patch.font_weight and patch.font_weight != "normal":
+                                        target_block.style.font_weight = patch.font_weight
+                                    if patch.italic:
+                                        target_block.style.italic = patch.italic
+                                    if patch.underline and patch.underline != "none":
+                                        target_block.style.underline = patch.underline
+                                    if patch.strikethrough:
+                                        target_block.style.strikethrough = patch.strikethrough
+
+                                    # 3. Convert and Apply Background Shading Colors
                                     if patch.background_color_rgba and "rgba(0,0,0,0)" not in patch.background_color_rgba:
                                         rgba_numbers = [int(x) for x in re.findall(r"\d+", patch.background_color_rgba)[:3]]
                                         if len(rgba_numbers) == 3:
                                             target_block.style.background_hex = f"{rgba_numbers[0]:02x}{rgba_numbers[1]:02x}{rgba_numbers[2]:02x}"
 
-                                    # 3. Apply Absolute Spatial Bounding Updates to match Input Imagery
+                                    # 4. Apply Border Styling (Fix 2)
+                                    if patch.border and patch.border.border_style != "none":
+                                        target_block.style.border_visible = True
+                                        target_block.style.border_style = patch.border.border_style
+                                        if patch.border.border_width_px > 0:
+                                            target_block.style.border_width_px = patch.border.border_width_px
+                                        if patch.border.border_color_rgba and "rgba(0,0,0,0)" not in patch.border.border_color_rgba:
+                                            target_block.style.border_color_rgba = patch.border.border_color_rgba
+
+                                    # 5. Apply Padding (Fix 2)
+                                    if patch.padding:
+                                        PX_TO_DXA = 1440 / 96
+                                        if patch.padding.top_px != 0:
+                                            target_block.style.cell_padding_dxa["top"] = int(patch.padding.top_px * PX_TO_DXA)
+                                        if patch.padding.bottom_px != 0:
+                                            target_block.style.cell_padding_dxa["bottom"] = int(patch.padding.bottom_px * PX_TO_DXA)
+                                        if patch.padding.left_px != 0:
+                                            target_block.style.cell_padding_dxa["left"] = int(patch.padding.left_px * PX_TO_DXA)
+                                        if patch.padding.right_px != 0:
+                                            target_block.style.cell_padding_dxa["right"] = int(patch.padding.right_px * PX_TO_DXA)
+
+                                    # 6. Apply Absolute Spatial Bounding Updates to match Input Imagery
                                     if target_block.bbox:
                                         # Adjust positions dynamically based on red mask shift calculations
                                         if patch.margin and patch.margin.top_px != 0:
@@ -498,22 +529,23 @@ async def stream_document_reconstruction(
                                         if patch.height_px_offset != 0:
                                             target_block.bbox.height_px += patch.height_px_offset
 
-                            # RE-CALIBRATE DOWNSTREAM FLOW: Reflow blocks after patches
-                            # Ensures elements shift vertically when upper blocks change height/position
+                            # RE-CALIBRATE DOWNSTREAM FLOW: Track-aware reflow (Fix 1)
+                            # Groups blocks into horizontal tracks so side-by-side columns
+                            # don't contaminate each other's vertical flow.
+                            tracks = agent._group_blocks_into_tracks(current_layout.blocks)
                             margin_top = current_layout.margin_px.get("top", 72.0) if isinstance(current_layout.margin_px, dict) else current_layout.margin_px.top
-                            margin_left = current_layout.margin_px.get("left", 72.0) if isinstance(current_layout.margin_px, dict) else current_layout.margin_px.left
-                            margin_right = current_layout.margin_px.get("right", 72.0) if isinstance(current_layout.margin_px, dict) else current_layout.margin_px.right
 
-                            full_width_threshold = current_layout.page_width_px - margin_left - margin_right
-                            cursor_y = float(margin_top)
-
-                            for block in current_layout.blocks:
-                                if block.bbox:
-                                    # If block is full-width (or nearly full-width), reflow it relative to cursor
-                                    if abs(block.bbox.width_px - full_width_threshold) < 2.0:
-                                        block.bbox.y_px = max(block.bbox.y_px, cursor_y)
-                                    # Update cursor for next block's potential reflow
-                                    cursor_y = max(cursor_y, block.bbox.y_px + block.bbox.height_px + 8)
+                            for track in tracks:
+                                track_cursor_y = float(margin_top)
+                                track.sort(key=lambda i: (
+                                    current_layout.blocks[i].bbox.y_px if current_layout.blocks[i].bbox else float('inf'),
+                                    i,
+                                ))
+                                for idx in track:
+                                    block = current_layout.blocks[idx]
+                                    if block.bbox:
+                                        block.bbox.y_px = max(block.bbox.y_px, track_cursor_y)
+                                        track_cursor_y = max(track_cursor_y, block.bbox.y_px + block.bbox.height_px + 8)
 
                             current_layout = agent.auto_layout(current_layout)
                         except Exception as e:

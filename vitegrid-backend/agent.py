@@ -123,6 +123,13 @@ class StyleTokens(BaseModel):
         default=0.0, description="Word spacing in pixels."
     )
     border_visible: bool = Field(default=True, description="Whether structural borders are displayed.")
+    border_style: Literal["none", "solid", "dashed", "dotted", "double"] = Field(
+        default="solid", description="CSS border line style."
+    )
+    border_width_px: float = Field(default=1.0, description="Border width in pixels.")
+    border_color_rgba: str = Field(
+        default="rgba(0,0,0,1)", description="Border color in RGBA format."
+    )
     cell_padding_dxa: dict[str, int] = Field(
         default_factory=_default_cell_padding_dxa,
         description="Explicit cell margins in twips/dxa: keys top/bottom/left/right.",
@@ -958,6 +965,62 @@ def _normalize_margins(raw: dict[str, int] | None) -> dict[str, int]:
     return out
 
 
+def _blocks_share_horizontal_track(a: BoundingBox, b: BoundingBox) -> bool:
+    """True if two bboxes overlap horizontally by more than 50% of the narrower one."""
+    overlap_left = max(a.x_px, b.x_px)
+    overlap_right = min(a.x_px + a.width_px, b.x_px + b.width_px)
+    overlap = max(0.0, overlap_right - overlap_left)
+    narrower = min(a.width_px, b.width_px)
+    if narrower <= 0:
+        return False
+    return overlap / narrower > 0.5
+
+
+def _group_blocks_into_tracks(
+    blocks: list[DocumentBlock],
+) -> list[list[int]]:
+    """Group block indices into horizontal layout tracks.
+
+    Blocks whose x-ranges overlap significantly are placed in the same
+    track (same column). Blocks with no bbox or zero dimensions are put
+    into a special 'unpositioned' group that gets full-width treatment.
+    """
+    positioned: list[int] = []
+    unpositioned: list[int] = []
+
+    for i, block in enumerate(blocks):
+        if block.bbox is not None and block.bbox.width_px > 0 and block.bbox.height_px > 0:
+            positioned.append(i)
+        else:
+            unpositioned.append(i)
+
+    # Cluster positioned blocks by horizontal overlap
+    tracks: list[list[int]] = []
+    for idx in positioned:
+        bbox = blocks[idx].bbox
+        assert bbox is not None
+        merged = False
+        for track in tracks:
+            # Check if this block shares a horizontal track with any block already in the track
+            for existing_idx in track:
+                existing_bbox = blocks[existing_idx].bbox
+                assert existing_bbox is not None
+                if _blocks_share_horizontal_track(bbox, existing_bbox):
+                    track.append(idx)
+                    merged = True
+                    break
+            if merged:
+                break
+        if not merged:
+            tracks.append([idx])
+
+    # Unpositioned blocks form their own track (will get full-width layout)
+    if unpositioned:
+        tracks.append(unpositioned)
+
+    return tracks
+
+
 def auto_layout(layout: DocumentLayout) -> DocumentLayout:
     layout.margin_px = _normalize_margins(layout.margin_px)
     content_x = layout.margin_px["left"]
@@ -965,19 +1028,35 @@ def auto_layout(layout: DocumentLayout) -> DocumentLayout:
     content_width = max(
         1, layout.page_width_px - layout.margin_px["left"] - layout.margin_px["right"]
     )
-    cursor_y = float(content_y)
-    for block in layout.blocks:
-        if block.bbox is not None and block.bbox.width_px > 0 and block.bbox.height_px > 0:
-            cursor_y = max(cursor_y, block.bbox.y_px + block.bbox.height_px + 8)
-            continue
-        height = _estimate_block_height(block, content_width)
-        block.bbox = BoundingBox(
-            x_px=float(content_x),
-            y_px=cursor_y,
-            width_px=float(content_width),
-            height_px=height,
-        )
-        cursor_y += height + 8
+
+    tracks = _group_blocks_into_tracks(layout.blocks)
+
+    for track in tracks:
+        # Each track maintains its own vertical cursor
+        track_cursor_y = float(content_y)
+
+        # Sort blocks in this track by their current y position (or index order)
+        track.sort(key=lambda i: (
+            layout.blocks[i].bbox.y_px if layout.blocks[i].bbox else float('inf'),
+            i,
+        ))
+
+        for idx in track:
+            block = layout.blocks[idx]
+            if block.bbox is not None and block.bbox.width_px > 0 and block.bbox.height_px > 0:
+                # Positioned block — preserve its geometry, just advance track cursor
+                track_cursor_y = max(track_cursor_y, block.bbox.y_px + block.bbox.height_px + 8)
+                continue
+            # Unpositioned block — assign full-width layout
+            height = _estimate_block_height(block, content_width)
+            block.bbox = BoundingBox(
+                x_px=float(content_x),
+                y_px=track_cursor_y,
+                width_px=float(content_width),
+                height_px=height,
+            )
+            track_cursor_y += height + 8
+
     return layout
 
 
@@ -1161,6 +1240,11 @@ def _proposal_to_block(prop: _BlockProposal, spans: list[Any], block_id: str) ->
             [_assemble_text_from_spans(cell, spans) for cell in row]
             for row in prop.table_rows
         ]
+        # Auto-generate structured TableCell objects for per-cell refinement
+        table_cells = [
+            [TableCell(text=cell_text) for cell_text in row]
+            for row in rows
+        ]
         all_indices = [i for row in prop.table_rows for cell in row for i in cell]
         style = _dominant_style(all_indices, spans)
         style.align = prop.align
@@ -1169,6 +1253,7 @@ def _proposal_to_block(prop: _BlockProposal, spans: list[Any], block_id: str) ->
             id=block_id,
             type=BlockType.TABLE,
             rows=rows,
+            table_cells=table_cells,
             style=style,
         )
     if prop.block_type == BlockType.IMAGE_PLACEHOLDER:
@@ -1574,6 +1659,13 @@ def import_from_classified_blocks(
             align=c.align,
             border_visible=True if c.block_type == "table" else None,
         )
+        # Auto-generate structured TableCell objects for table blocks
+        table_cells = None
+        if c.block_type == "table" and c.rows:
+            table_cells = [
+                [TableCell(text=cell_text) for cell_text in row]
+                for row in c.rows
+            ]
         blocks.append(
             DocumentBlock(
                 id=f"block-{i}",
@@ -1581,6 +1673,7 @@ def import_from_classified_blocks(
                 text=c.text,
                 items=c.items,
                 rows=c.rows,
+                table_cells=table_cells,
                 bbox=bbox,
                 style=style,
             )
@@ -1765,25 +1858,7 @@ class CSSSpacing(BaseModel):
     left_px: float = Field(default=0.0, description="Left spacing in pixels.")
 
 
-# CSS Box Model Classes per Specification
-class CSSBorder(BaseModel):
-    """CSS border styling configuration per specification."""
-    border_style: Literal["none", "solid", "dashed", "dotted", "double"] = Field(
-        default="none", description="Border line style."
-    )
-    border_width_px: float = Field(default=0.0, ge=0.0, description="Border width in pixels.")
-    border_color_rgba: str = Field(
-        default="rgba(0,0,0,0)",
-        description="Border color in RGBA format.",
-    )
-
-
-class CSSSpacing(BaseModel):
-    """CSS margin/padding spacing configuration per specification."""
-    top_px: float = Field(default=0.0, description="Top spacing in pixels.")
-    right_px: float = Field(default=0.0, description="Right spacing in pixels.")
-    bottom_px: float = Field(default=0.0, description="Bottom spacing in pixels.")
-    left_px: float = Field(default=0.0, description="Left spacing in pixels.")
+# (Duplicate CSSBorder/CSSSpacing removed — single definitions above are canonical)
 
 
 class BlockStylePatch(BaseModel):
@@ -1816,6 +1891,14 @@ class BlockStylePatch(BaseModel):
     text_align: Literal["left", "right", "center", "justify"] = Field(
         default="left", description="Text alignment."
     )
+    font_weight: Literal["normal", "bold"] = Field(
+        default="normal", description="Font weight override."
+    )
+    italic: bool = Field(default=False, description="Italic text style.")
+    underline: Literal["none", "single", "double"] = Field(
+        default="none", description="Underline style."
+    )
+    strikethrough: bool = Field(default=False, description="Strikethrough text decoration.")
     z_index: int = Field(default=1, ge=0, le=100, description="Stacking order.")
     background_color_rgba: str = Field(
         default="rgba(0,0,0,0)", description="Background color in RGBA format."
@@ -1963,17 +2046,68 @@ def optimize_template_closed_loop(
         for patch in patch_report.patches:
             if patch.element_id in block_map:
                 target_block = block_map[patch.element_id]
+
+                # 1. Typographical overrides
                 if patch.font_size_pt and patch.font_size_pt != 11.0:
                     target_block.style.font_size_pt = patch.font_size_pt
                 if patch.text_align and patch.text_align != target_block.style.align:
                     target_block.style.align = patch.text_align
+                if patch.color_hex:
+                    target_block.style.color_hex = patch.color_hex.replace("#", "")
                 if patch.line_height_multiplier and patch.line_height_multiplier > 1.0:
-                    if target_block.spacing.line_height_px:
-                        target_block.spacing.line_height_px = target_block.style.font_size_pt * patch.line_height_multiplier
-                if patch.margin.top_px and patch.margin.top_px != 0 and target_block.bbox:
-                    target_block.bbox.y_px = float(target_block.bbox.y_px + patch.margin.top_px)
-                if patch.margin.left_px and patch.margin.left_px != 0 and target_block.bbox:
-                    target_block.bbox.x_px = float(target_block.bbox.x_px + patch.margin.left_px)
+                    target_block.spacing.line_height_px = target_block.style.font_size_pt * patch.line_height_multiplier
+
+                # 2. Typographic styling (Fix 3)
+                if patch.font_weight and patch.font_weight != "normal":
+                    target_block.style.font_weight = patch.font_weight
+                if patch.italic:
+                    target_block.style.italic = patch.italic
+                if patch.underline and patch.underline != "none":
+                    target_block.style.underline = patch.underline
+                if patch.strikethrough:
+                    target_block.style.strikethrough = patch.strikethrough
+
+                # 3. Background color
+                if patch.background_color_rgba and "rgba(0,0,0,0)" not in patch.background_color_rgba:
+                    rgba_numbers = [int(x) for x in re.findall(r"\d+", patch.background_color_rgba)[:3]]
+                    if len(rgba_numbers) == 3:
+                        target_block.style.background_hex = f"{rgba_numbers[0]:02x}{rgba_numbers[1]:02x}{rgba_numbers[2]:02x}"
+
+                # 4. Border styling (Fix 2)
+                if patch.border and patch.border.border_style != "none":
+                    target_block.style.border_visible = True
+                    target_block.style.border_style = patch.border.border_style
+                    if patch.border.border_width_px > 0:
+                        target_block.style.border_width_px = patch.border.border_width_px
+                    if patch.border.border_color_rgba and "rgba(0,0,0,0)" not in patch.border.border_color_rgba:
+                        target_block.style.border_color_rgba = patch.border.border_color_rgba
+
+                # 5. Padding (Fix 2)
+                if patch.padding:
+                    PX_TO_DXA = 1440 / 96
+                    if patch.padding.top_px != 0:
+                        target_block.style.cell_padding_dxa["top"] = int(patch.padding.top_px * PX_TO_DXA)
+                    if patch.padding.bottom_px != 0:
+                        target_block.style.cell_padding_dxa["bottom"] = int(patch.padding.bottom_px * PX_TO_DXA)
+                    if patch.padding.left_px != 0:
+                        target_block.style.cell_padding_dxa["left"] = int(patch.padding.left_px * PX_TO_DXA)
+                    if patch.padding.right_px != 0:
+                        target_block.style.cell_padding_dxa["right"] = int(patch.padding.right_px * PX_TO_DXA)
+
+                # 6. Spatial positioning
+                if target_block.bbox:
+                    if patch.margin and patch.margin.top_px != 0:
+                        target_block.bbox.y_px += patch.margin.top_px
+                    if patch.margin and patch.margin.left_px != 0:
+                        target_block.bbox.x_px += patch.margin.left_px
+                    if patch.top_px_offset is not None:
+                        target_block.bbox.y_px = patch.top_px_offset
+                    if patch.left_px_offset is not None:
+                        target_block.bbox.x_px = patch.left_px_offset
+                    if patch.width_pct and patch.width_pct > 0:
+                        target_block.bbox.width_px = (patch.width_pct / 100.0) * current_layout.page_width_px
+                    if patch.height_px_offset != 0:
+                        target_block.bbox.height_px += patch.height_px_offset
 
         # Step F: Force a geometric auto-layout normalization pass
         current_layout = auto_layout(current_layout)

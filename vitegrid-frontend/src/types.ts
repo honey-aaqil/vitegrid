@@ -37,6 +37,9 @@ export interface StyleTokens {
   letter_spacing_px?: number;
   word_spacing_px?: number;
   border_visible: boolean;
+  border_style?: "none" | "solid" | "dashed" | "dotted" | "double";
+  border_width_px?: number;
+  border_color_rgba?: string;
   cell_padding_dxa: CellPaddingDxa;
   list_format: ListFormat;
   list_level: number;

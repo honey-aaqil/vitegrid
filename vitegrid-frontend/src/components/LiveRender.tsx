@@ -138,7 +138,9 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
                     colSpan={cell.col_span ?? 1}
                     rowSpan={cell.row_span ?? 1}
                     style={{
-                      border: block.style.border_visible ? "1px solid rgba(0,0,0,0.25)" : "1px solid transparent",
+                      border: block.style.border_visible
+                        ? `${block.style.border_width_px ?? 1}px ${block.style.border_style ?? "solid"} ${block.style.border_color_rgba ?? "rgba(0,0,0,1)"}`
+                        : "1px solid transparent",
                       paddingTop: (cell.padding_top_px ?? defaultPaddingPx.top),
                       paddingBottom: (cell.padding_bottom_px ?? defaultPaddingPx.bottom),
                       paddingLeft: (cell.padding_left_px ?? defaultPaddingPx.left),
