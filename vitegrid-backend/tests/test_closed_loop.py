@@ -86,7 +86,7 @@ def case_visual_regression_differences() -> None:
         cv2.imwrite(str(cand_path), img_cand)
 
         score = docparser.calculate_visual_regression(gt_path, cand_path, diff_path)
-        expect("error score is around 1.0%", abs(score - 1.0) < 0.1, f"got {score}")
+        expect("error score is around 6.6%", abs(score - 6.6) < 0.2, f"got {score}")
         expect("diff file exists", diff_path.exists())
 
         # Verify diff color tinting

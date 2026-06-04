@@ -1,0 +1,242 @@
+{
+  "D:\\vitegrid\\pyrightconfig.json": {
+    "mtime": 1779716794.425294,
+    "ast_hash": "0ae0723b5e0b18ba6fe1671973407610",
+    "semantic_hash": "0ae0723b5e0b18ba6fe1671973407610"
+  },
+  "D:\\vitegrid\\.vscode\\settings.json": {
+    "mtime": 1779716740.8128803,
+    "ast_hash": "e7e03d01459f79a3a6dfda07fc1a7d24",
+    "semantic_hash": "e7e03d01459f79a3a6dfda07fc1a7d24"
+  },
+  "D:\\vitegrid\\vitegrid-backend\\agent.py": {
+    "mtime": 1780485165.4777236,
+    "ast_hash": "37f78fe88305faccbe6cdf6d88227867",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-backend\\coordinate_transforms.py": {
+    "mtime": 1780245046.0196474,
+    "ast_hash": "b3339eed107d21d5ff1a03f81bb08a90",
+    "semantic_hash": "b3339eed107d21d5ff1a03f81bb08a90"
+  },
+  "D:\\vitegrid\\vitegrid-backend\\database.py": {
+    "mtime": 1779626563.8254168,
+    "ast_hash": "f7c04465e8c0e86c7b5f6b37aed992be",
+    "semantic_hash": "f7c04465e8c0e86c7b5f6b37aed992be"
+  },
+  "D:\\vitegrid\\vitegrid-backend\\main.py": {
+    "mtime": 1780300389.4885087,
+    "ast_hash": "ee947b7f0703e098572d6cfc79ff2d7a",
+    "semantic_hash": "ee947b7f0703e098572d6cfc79ff2d7a"
+  },
+  "D:\\vitegrid\\vitegrid-backend\\parser.py": {
+    "mtime": 1780483815.1860595,
+    "ast_hash": "b2efd0cde5332941dcb49621e20cbb2f",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-backend\\pyrightconfig.json": {
+    "mtime": 1779716799.915593,
+    "ast_hash": "e271f4df94c6d17afc81bb41e22e9bcd",
+    "semantic_hash": "e271f4df94c6d17afc81bb41e22e9bcd"
+  },
+  "D:\\vitegrid\\vitegrid-backend\\streaming.py": {
+    "mtime": 1780245046.0689712,
+    "ast_hash": "cbd977d44d450dc81e9fee119aec40b7",
+    "semantic_hash": "cbd977d44d450dc81e9fee119aec40b7"
+  },
+  "D:\\vitegrid\\vitegrid-backend\\verify_text_loss.py": {
+    "mtime": 1780245046.070869,
+    "ast_hash": "65e21b35546a29aa4cebc8759b2ee1d3",
+    "semantic_hash": "65e21b35546a29aa4cebc8759b2ee1d3"
+  },
+  "D:\\vitegrid\\vitegrid-backend\\.vscode\\settings.json": {
+    "mtime": 1779716746.351832,
+    "ast_hash": "e7e03d01459f79a3a6dfda07fc1a7d24",
+    "semantic_hash": "e7e03d01459f79a3a6dfda07fc1a7d24"
+  },
+  "D:\\vitegrid\\vitegrid-backend\\tests\\test_audit_programmatic.py": {
+    "mtime": 1780300565.438479,
+    "ast_hash": "6b581882bca08b82d718adcade49a6d4",
+    "semantic_hash": "6b581882bca08b82d718adcade49a6d4"
+  },
+  "D:\\vitegrid\\vitegrid-backend\\tests\\test_closed_loop.py": {
+    "mtime": 1780300719.117879,
+    "ast_hash": "4498a8a07f0b5cbc83a2d92f3cf2a6ec",
+    "semantic_hash": "4498a8a07f0b5cbc83a2d92f3cf2a6ec"
+  },
+  "D:\\vitegrid\\vitegrid-backend\\tests\\test_image_pipeline.py": {
+    "mtime": 1779692569.005753,
+    "ast_hash": "9588e5785fb2523aa52b87d39ddcaad2",
+    "semantic_hash": "9588e5785fb2523aa52b87d39ddcaad2"
+  },
+  "D:\\vitegrid\\vitegrid-backend\\tests\\test_parser_v2.py": {
+    "mtime": 1780483776.524733,
+    "ast_hash": "1604fdc5d60c538230af644c75858d57",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-backend\\tests\\test_remediation_phases.py": {
+    "mtime": 1779721598.8548467,
+    "ast_hash": "4f06ff7aa7645dd304dded45a4b07f07",
+    "semantic_hash": "4f06ff7aa7645dd304dded45a4b07f07"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\package.json": {
+    "mtime": 1779626843.3915145,
+    "ast_hash": "80cba3a868cf7c61d7b47d548d296008",
+    "semantic_hash": "80cba3a868cf7c61d7b47d548d296008"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\postcss.config.js": {
+    "mtime": 1779626869.6949575,
+    "ast_hash": "c735540bb63936a123bc867d950c9f69",
+    "semantic_hash": "c735540bb63936a123bc867d950c9f69"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\tailwind.config.js": {
+    "mtime": 1779632213.3535492,
+    "ast_hash": "c5f974463ee850051fffc31b73cb53a9",
+    "semantic_hash": "c5f974463ee850051fffc31b73cb53a9"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\tsconfig.json": {
+    "mtime": 1779626855.125817,
+    "ast_hash": "f032d7929d20e139072805f361de96df",
+    "semantic_hash": "f032d7929d20e139072805f361de96df"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\tsconfig.node.json": {
+    "mtime": 1779627275.1390793,
+    "ast_hash": "811737ffde7b37783729a76f087a5c6c",
+    "semantic_hash": "811737ffde7b37783729a76f087a5c6c"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\vite.config.ts": {
+    "mtime": 1779629185.9656317,
+    "ast_hash": "712d2eaf46bf352057c053756da92fa5",
+    "semantic_hash": "712d2eaf46bf352057c053756da92fa5"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\dist-types\\vite.config.d.ts": {
+    "mtime": 1779627352.9233935,
+    "ast_hash": "9fcf75521f4c43fd8b75300e0f63b867",
+    "semantic_hash": "9fcf75521f4c43fd8b75300e0f63b867"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\scripts\\verify-margin.mjs": {
+    "mtime": 1779689988.206405,
+    "ast_hash": "3b37a61cd63bde92364f992abdf80297",
+    "semantic_hash": "3b37a61cd63bde92364f992abdf80297"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\api.ts": {
+    "mtime": 1779632284.9321811,
+    "ast_hash": "747c9a6ec5e0191ddf0665ca0bec0228",
+    "semantic_hash": "747c9a6ec5e0191ddf0665ca0bec0228"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\App.tsx": {
+    "mtime": 1780249365.9478583,
+    "ast_hash": "5110f78a1577b4762d730c439501ff32",
+    "semantic_hash": "5110f78a1577b4762d730c439501ff32"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\main.tsx": {
+    "mtime": 1779627128.0026445,
+    "ast_hash": "d251658082707a1e1cbed3c6f417dbc5",
+    "semantic_hash": "d251658082707a1e1cbed3c6f417dbc5"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\types.ts": {
+    "mtime": 1780300266.3075335,
+    "ast_hash": "058b2dbc09dfbe8b886bd59ae10c9312",
+    "semantic_hash": "058b2dbc09dfbe8b886bd59ae10c9312"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\components\\ChatEditor.tsx": {
+    "mtime": 1779632277.1356304,
+    "ast_hash": "9ffa812351bbcdb0d41108b2432ca556",
+    "semantic_hash": "9ffa812351bbcdb0d41108b2432ca556"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\components\\Dashboard.tsx": {
+    "mtime": 1779692509.3455095,
+    "ast_hash": "cd9b76d65961ae8dd30a406612c99833",
+    "semantic_hash": "cd9b76d65961ae8dd30a406612c99833"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\components\\HeadlessPreview.tsx": {
+    "mtime": 1779716177.7645943,
+    "ast_hash": "3bbdd868fe094e1acdf725a1da24eca4",
+    "semantic_hash": "3bbdd868fe094e1acdf725a1da24eca4"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\components\\HistoryPanel.tsx": {
+    "mtime": 1779632338.0352168,
+    "ast_hash": "3b09962d91272e0dd18efd5d1dbd95d7",
+    "semantic_hash": "3b09962d91272e0dd18efd5d1dbd95d7"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\components\\LiveRender.tsx": {
+    "mtime": 1780302359.4327419,
+    "ast_hash": "0551ec03ac61a9d60550e3f197f4fbea",
+    "semantic_hash": "0551ec03ac61a9d60550e3f197f4fbea"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\components\\TextEditor.tsx": {
+    "mtime": 1780297278.8886135,
+    "ast_hash": "28af33109eab32f45b21ec4fd56dcfb0",
+    "semantic_hash": "28af33109eab32f45b21ec4fd56dcfb0"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\state\\history.ts": {
+    "mtime": 1779626937.2890346,
+    "ast_hash": "022ffe93fe6fe60b89cc41a9b92e567c",
+    "semantic_hash": "022ffe93fe6fe60b89cc41a9b92e567c"
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\utils\\wordCompiler.ts": {
+    "mtime": 1780489022.1112032,
+    "ast_hash": "68475390d2c313ae79899e508d49e197",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\src\\utils\\wordValidation.ts": {
+    "mtime": 1780247728.691188,
+    "ast_hash": "e2d1790f1db96dcca12c3a85cb53845e",
+    "semantic_hash": "e2d1790f1db96dcca12c3a85cb53845e"
+  },
+  "D:\\vitegrid\\.agents\\rules\\graphify.md": {
+    "mtime": 1780481970.1559055,
+    "ast_hash": "a0e4d192b9e2e17256124dbfc8e24e6a",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\.agents\\workflows\\graphify.md": {
+    "mtime": 1780481970.16114,
+    "ast_hash": "637776aa6f7496d069afe7520c845c8a",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-backend\\requirements.txt": {
+    "mtime": 1779716148.4863727,
+    "ast_hash": "9992dc07c20a4d40cd5c7a52855940bf",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-frontend\\index.html": {
+    "mtime": 1779632231.3352175,
+    "ast_hash": "83ec6e6b1961230ccfd0e0bbc9dec3b6",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-backend\\static\\uploads\\44f3d0618fd74e2484f5ad8c4333b07a.jpg": {
+    "mtime": 1780306840.063044,
+    "ast_hash": "c408136186be708bd0b4789ed967ab67",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-backend\\static\\uploads\\cb0883d2b4f24ac2b61fd4012296cacf.jpg": {
+    "mtime": 1780306144.847659,
+    "ast_hash": "c408136186be708bd0b4789ed967ab67",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-backend\\static\\uploads\\opt_Ahmadhu Aaqil Resume_2a82f2c1a6724a11b87ba79d4f33351f\\ground_truth.png": {
+    "mtime": 1780307386.8353114,
+    "ast_hash": "e8e63911f7dc0fd0741dc29292c244dc",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-backend\\static\\uploads\\5a74f129d71c4187ae77207d383253b9.jpg": {
+    "mtime": 1780484163.0128431,
+    "ast_hash": "c408136186be708bd0b4789ed967ab67",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-backend\\static\\uploads\\opt_Ahmadhu Aaqil Resume_b1d44881226a4b8882ffae480251b2cd\\ground_truth.png": {
+    "mtime": 1780484695.793764,
+    "ast_hash": "e8e63911f7dc0fd0741dc29292c244dc",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-backend\\static\\uploads\\d044e57fff1b43fb80bf181ede03540c.jpg": {
+    "mtime": 1780485471.0724235,
+    "ast_hash": "c408136186be708bd0b4789ed967ab67",
+    "semantic_hash": ""
+  },
+  "D:\\vitegrid\\vitegrid-backend\\static\\uploads\\opt_Ahmadhu Aaqil Resume_ddad079166634f6aa9b2e82c0bcef81e\\ground_truth.png": {
+    "mtime": 1780486020.7504644,
+    "ast_hash": "e8e63911f7dc0fd0741dc29292c244dc",
+    "semantic_hash": ""
+  }
+}

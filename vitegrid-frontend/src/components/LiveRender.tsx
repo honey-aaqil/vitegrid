@@ -35,7 +35,16 @@ function styleToCss(block: DocumentBlock): React.CSSProperties {
   let borderLeft = undefined;
   let borderRight = undefined;
 
-  if (s.line_alignment && s.line_alignment !== "none") {
+  if (s.border_visible && s.border_style && s.border_style !== "none") {
+    const thickness = `${s.border_width_px ?? 1}px`;
+    const style = s.border_style;
+    let color = s.border_color_rgba || "rgba(0,0,0,1)";
+    const borderStr = `${thickness} ${style} ${color}`;
+    borderTop = borderStr;
+    borderBottom = borderStr;
+    borderLeft = borderStr;
+    borderRight = borderStr;
+  } else if (s.line_alignment && s.line_alignment !== "none") {
     const thickness = `${s.line_thickness_px ?? 1}px`;
     let color = s.line_color_hex ?? "000000";
     if (!color.startsWith("#")) {
@@ -55,6 +64,11 @@ function styleToCss(block: DocumentBlock): React.CSSProperties {
     }
   }
 
+  const padTop = s.cell_padding_dxa && s.cell_padding_dxa.top !== 120 ? s.cell_padding_dxa.top * DXA_TO_PX : 0;
+  const padBottom = s.cell_padding_dxa && s.cell_padding_dxa.bottom !== 120 ? s.cell_padding_dxa.bottom * DXA_TO_PX : 0;
+  const padLeft = s.cell_padding_dxa && s.cell_padding_dxa.left !== 180 ? s.cell_padding_dxa.left * DXA_TO_PX : 0;
+  const padRight = s.cell_padding_dxa && s.cell_padding_dxa.right !== 180 ? s.cell_padding_dxa.right * DXA_TO_PX : 0;
+
   return {
     color: colorValue,
     backgroundColor: bgColor || undefined,
@@ -69,6 +83,10 @@ function styleToCss(block: DocumentBlock): React.CSSProperties {
     letterSpacing: s.letter_spacing_px ? `${s.letter_spacing_px}px` : undefined,
     wordSpacing: s.word_spacing_px ? `${s.word_spacing_px}px` : undefined,
     whiteSpace: "pre-wrap",
+    paddingTop: padTop ? `${padTop}px` : undefined,
+    paddingBottom: padBottom ? `${padBottom}px` : undefined,
+    paddingLeft: padLeft ? `${padLeft}px` : undefined,
+    paddingRight: padRight ? `${padRight}px` : undefined,
     borderTop,
     borderBottom,
     borderLeft,
@@ -104,13 +122,13 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
     switch (block.type) {
     case "heading":
       return (
-        <h2 style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, padding: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom }}>
+        <h2 style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom }}>
           {block.text}
         </h2>
       );
     case "paragraph":
       return (
-        <p style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, padding: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom }}>
+        <p style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom }}>
           {block.text}
         </p>
       );
@@ -125,7 +143,6 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
           style={{
             ...cleanCss,
             margin: hasAbsoluteGeometry ? 0 : undefined,
-            padding: hasAbsoluteGeometry ? 0 : undefined,
             marginTop: hasAbsoluteGeometry ? 0 : margin_top,
             marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom,
             paddingLeft: effectivePaddingLeft,
@@ -158,7 +175,7 @@ function RenderedBlock({ block, index }: { block: DocumentBlock; index: number }
       const tableRows = block.table_cells || (block.rows?.map((row) => row.map((text) => ({ text, col_span: 1, row_span: 1, padding_top_px: 8, padding_bottom_px: 8, padding_left_px: 12, padding_right_px: 12, vertical_align: "top" as const }))) ?? []);
 
       return (
-        <table style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, padding: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom, width: "100%", borderCollapse: "collapse" }}>
+        <table style={{ ...cleanCss, margin: hasAbsoluteGeometry ? 0 : undefined, marginTop: hasAbsoluteGeometry ? 0 : margin_top, marginBottom: hasAbsoluteGeometry ? 0 : margin_bottom, width: "100%", borderCollapse: "collapse" }}>
           <tbody>
             {tableRows.map((row, r) => (
               <tr key={r}>

@@ -1,0 +1,1 @@
+{"nodes": [{"id": "workflows_graphify", "label": "Graphify Workflow", "file_type": "document", "source_file": ".agents/workflows/graphify.md"}], "edges": [{"source": "workflows_graphify", "target": "rules_graphify", "relation": "references", "confidence": "INFERRED", "confidence_score": 0.8, "source_file": ".agents/workflows/graphify.md"}], "hyperedges": []}

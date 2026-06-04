@@ -26,6 +26,7 @@ from parser import (
     _detect_table_v2,
     classify_pdf_layout,
     detect_columns,
+    cluster_y_coordinates,
 )
 
 _failures: list[str] = []
@@ -177,7 +178,64 @@ def case_dispatcher_env() -> None:
             os.environ["VITEGRID_PARSER"] = saved
 
 
+def case_dbscan_hdbscan_1d() -> None:
+    print("\n=== cluster_y_coordinates: DBSCAN/HDBSCAN 1D clustering ===")
+    # Spans with 1-2px variations around line 80 and line 120
+    y_coords = [80.0, 81.2, 80.8, 120.0, 121.5, 120.5]
+    font_sizes = [11.0] * 6
+    labels = cluster_y_coordinates(y_coords, font_sizes)
+    # Check that y_coords 0, 1, 2 are grouped in same cluster and 3, 4, 5 in another
+    expect("labels count matches input", len(labels) == 6)
+    expect("first group clustered together", labels[0] == labels[1] == labels[2])
+    expect("second group clustered together", labels[3] == labels[4] == labels[5])
+    expect("groups are distinct", labels[0] != labels[3])
+
+
+def case_column_collision_prevention() -> None:
+    print("\n=== _classify_pdf_layout_v2: column collision prevention ===")
+    # A spanning header title at the top, and two columns below.
+    # The header title should NOT collapse the columns.
+    spans = [
+        # Spanning header at y=40
+        span("CURRICULUM VITAE AND PROFESSIONAL WORK HISTORY", 60, 40, size=16, bold=True),
+        # Left column at y=100 and y=120
+        span("Profile", 60, 100, size=12),
+        span("Engineer for 5 years.", 60, 120, size=10),
+        # Right column at y=100 and y=120
+        span("Experience", 340, 100, size=12),
+        span("Worked at Acme Inc.", 340, 120, size=10),
+    ]
+    ex = extraction(spans)
+    v2_blocks = _classify_pdf_layout_v2(ex)
+    
+    def block_payload(b):
+        if b.text:
+            return b.text
+        if b.rows:
+            return " | ".join(" ".join(r) for r in b.rows)
+        if b.items:
+            return " ".join(b.items)
+        return ""
+        
+    v2_payloads = [block_payload(b) for b in v2_blocks]
+    
+    # We expect 3 distinct blocks:
+    # 1. Spanning header block: contains "CURRICULUM VITAE..."
+    # 2. Left column block: contains "Profile" and "Engineer"
+    # 3. Right column block: contains "Experience" and "Worked at Acme Inc."
+    header_found = any("CURRICULUM" in p for p in v2_payloads)
+    left_only = any("Profile" in p and "Experience" not in p for p in v2_payloads)
+    right_only = any("Experience" in p and "Profile" not in p for p in v2_payloads)
+    
+    expect("emits a header block", header_found, info=str(v2_payloads))
+    expect("emits a left-only block separate from right", left_only, info=str(v2_payloads))
+    expect("emits a right-only block separate from left", right_only, info=str(v2_payloads))
+    expect("total blocks is 3", len(v2_blocks) == 3, info=str(v2_payloads))
+
+
 if __name__ == "__main__":
+    case_dbscan_hdbscan_1d()
+    case_column_collision_prevention()
     case_detect_columns_two_column()
     case_detect_columns_single()
     case_v1_vs_v2_columns()

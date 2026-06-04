@@ -311,14 +311,33 @@ def extract_pdf_layout(
                             page_index=idx,
                         )
                     )
-        pix = page.get_pixmap(matrix=matrix, alpha=False)
+        try:
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            image_bytes = pix.tobytes("png")
+        except Exception as err:
+            import gc
+            gc.collect()
+            print(f"[Parser Warning] High-DPI render failed ({err}). Retrying at 120 DPI...")
+            try:
+                fallback_zoom = 120.0 / 72.0
+                fallback_matrix = pymupdf.Matrix(fallback_zoom, fallback_zoom)
+                pix = page.get_pixmap(matrix=fallback_matrix, alpha=False)
+                image_bytes = pix.tobytes("png")
+            except Exception as err2:
+                gc.collect()
+                print(f"[Parser Warning] 120 DPI render failed ({err2}). Retrying at 96 DPI...")
+                fallback_zoom = 96.0 / 72.0
+                fallback_matrix = pymupdf.Matrix(fallback_zoom, fallback_zoom)
+                pix = page.get_pixmap(matrix=fallback_matrix, alpha=False)
+                image_bytes = pix.tobytes("png")
+
         pages.append(
             PageLayout(
                 page_index=idx,
                 page_width_pt=float(page.rect.width),
                 page_height_pt=float(page.rect.height),
                 spans=spans,
-                image_bytes=pix.tobytes("png"),
+                image_bytes=image_bytes,
             )
         )
     doc.close()
@@ -1046,6 +1065,260 @@ def _classify_pdf_layout_v1(extraction: PdfExtraction) -> list[ClassifiedBlock]:
 # ----- Parser v2 (projection columns + cross-row table anchors) ----------------
 
 
+def dbscan_1d(coords: list[float], eps: float, min_pts: int = 1) -> list[int]:
+    """Lightweight 1D DBSCAN clustering on coordinate values."""
+    n = len(coords)
+    labels = [-1] * n
+    cluster_id = 0
+    for i in range(n):
+        if labels[i] != -1:
+            continue
+        neighbors = [j for j in range(n) if abs(coords[i] - coords[j]) <= eps]
+        if len(neighbors) < min_pts:
+            continue
+        labels[i] = cluster_id
+        queue = [j for j in neighbors if j != i]
+        for idx in queue:
+            if labels[idx] == -1:
+                labels[idx] = cluster_id
+            next_neighbors = [j for j in range(n) if abs(coords[idx] - coords[j]) <= eps]
+            if len(next_neighbors) >= min_pts:
+                for nn in next_neighbors:
+                    if labels[nn] == -1 and nn not in queue:
+                        queue.append(nn)
+        cluster_id += 1
+    return labels
+
+
+def hdbscan_1d(coords: list[float], min_cluster_size: int = 2, min_samples: int = 1) -> list[int]:
+    """Hierarchical DBSCAN (HDBSCAN) in 1D space using NumPy."""
+    import numpy as np
+    n = len(coords)
+    if n < min_cluster_size:
+        return [-1] * n
+
+    y = np.array(coords, dtype=float)
+    dists = np.abs(y[:, None] - y[None, :])
+    sorted_dists = np.sort(dists, axis=1)
+    k = min(min_samples, n - 1)
+    core_dists = sorted_dists[:, k]
+    d_mre = np.maximum(np.maximum(core_dists[:, None], core_dists[None, :]), dists)
+
+    # Prim's algorithm for MST
+    mst_edges = []
+    visited = np.zeros(n, dtype=bool)
+    min_dist = np.full(n, np.inf)
+    parent = np.full(n, -1, dtype=int)
+    min_dist[0] = 0.0
+    for _ in range(n):
+        u = -1
+        for i in range(n):
+            if not visited[i] and (u == -1 or min_dist[i] < min_dist[u]):
+                u = i
+        if u == -1:
+            break
+        visited[u] = True
+        if parent[u] != -1:
+            mst_edges.append((parent[u], u, min_dist[u]))
+        for v in range(n):
+            if not visited[v] and d_mre[u, v] < min_dist[v]:
+                min_dist[v] = d_mre[u, v]
+                parent[v] = u
+
+    if not mst_edges:
+        return [-1] * n
+
+    mst_edges.sort(key=lambda e: e[2])
+    parent_tree = list(range(2 * n - 1))
+    size = [1] * n + [0] * (n - 1)
+    children = {}
+    node_lambdas = {}
+
+    def find(i):
+        path = []
+        while parent_tree[i] != i:
+            path.append(i)
+            i = parent_tree[i]
+        for node in path:
+            parent_tree[node] = i
+        return i
+
+    next_node = n
+    for u, v, w in mst_edges:
+        root_u = find(u)
+        root_v = find(v)
+        if root_u != root_v:
+            parent_tree[root_u] = next_node
+            parent_tree[root_v] = next_node
+            size[next_node] = size[root_u] + size[root_v]
+            children[next_node] = (root_u, root_v)
+            node_lambdas[root_u] = 1.0 / w if w > 0 else np.inf
+            node_lambdas[root_v] = 1.0 / w if w > 0 else np.inf
+            next_node += 1
+
+    root_node = next_node - 1
+    node_lambdas[root_node] = 0.0
+
+    condensed_nodes = []
+    condensed_children = {}
+    condensed_parent = {}
+    condensed_lambda_birth = {}
+    cluster_mapping = {}
+    point_death = [0.0] * n
+
+    def record_fallout(node, lambda_val):
+        if node < n:
+            point_death[node] = lambda_val
+            return
+        left, right = children[node]
+        record_fallout(left, lambda_val)
+        record_fallout(right, lambda_val)
+
+    def condense_tree(node, current_cluster):
+        if node < n:
+            cluster_mapping[node] = current_cluster
+            return
+        left, right = children[node]
+        sz_l = size[left]
+        sz_r = size[right]
+        w_split = 1.0 / node_lambdas[left]
+
+        if sz_l >= min_cluster_size and sz_r >= min_cluster_size:
+            left_cluster = len(condensed_nodes)
+            condensed_nodes.append(left_cluster)
+            condensed_children.setdefault(current_cluster, []).append(left_cluster)
+            condensed_parent[left_cluster] = current_cluster
+            condensed_lambda_birth[left_cluster] = 1.0 / w_split
+
+            right_cluster = len(condensed_nodes)
+            condensed_nodes.append(right_cluster)
+            condensed_children.setdefault(current_cluster, []).append(right_cluster)
+            condensed_parent[right_cluster] = current_cluster
+            condensed_lambda_birth[right_cluster] = 1.0 / w_split
+
+            condense_tree(left, left_cluster)
+            condense_tree(right, right_cluster)
+        elif sz_l >= min_cluster_size:
+            condense_tree(left, current_cluster)
+            record_fallout(right, 1.0 / w_split)
+        elif sz_r >= min_cluster_size:
+            condense_tree(right, current_cluster)
+            record_fallout(left, 1.0 / w_split)
+        else:
+            record_fallout(left, 1.0 / w_split)
+            record_fallout(right, 1.0 / w_split)
+
+    root_cluster = 0
+    condensed_nodes.append(root_cluster)
+    condensed_lambda_birth[root_cluster] = 0.0
+    condense_tree(root_node, root_cluster)
+
+    cluster_points = {}
+    for node in range(n):
+        c = cluster_mapping.get(node, -1)
+        if c != -1:
+            cluster_points.setdefault(c, []).append(node)
+
+    stabilities = {}
+    for c in condensed_nodes:
+        birth = condensed_lambda_birth[c]
+        pts = cluster_points.get(c, [])
+        child_clusters = condensed_children.get(c, [])
+        if child_clusters:
+            death = condensed_lambda_birth[child_clusters[0]]
+        else:
+            death = np.inf
+        stability = 0.0
+        for p in pts:
+            p_lambda = point_death[p] if point_death[p] > 0 else death
+            if p_lambda == np.inf:
+                p_lambda = sorted_dists.max()
+            stability += max(0.0, p_lambda - birth)
+        stabilities[c] = stability
+
+    selected_clusters = set()
+
+    def select_clusters(c):
+        child_clusters = condensed_children.get(c, [])
+        if not child_clusters:
+            return stabilities[c], [c]
+        child_stab_sum = sum(select_clusters(child)[0] for child in child_clusters)
+        child_selected = []
+        for child in child_clusters:
+            child_selected.extend(select_clusters(child)[1])
+        if stabilities[c] >= child_stab_sum:
+            return stabilities[c], [c]
+        else:
+            return child_stab_sum, child_selected
+
+    _, final_clusters = select_clusters(root_cluster)
+    labels = np.full(n, -1, dtype=int)
+    for idx, c in enumerate(final_clusters):
+        for p in cluster_points.get(c, []):
+            labels[p] = idx
+    return list(labels)
+
+
+def cluster_y_coordinates(y_coords: list[float], font_sizes: list[float]) -> list[int]:
+    """Robust 1D Y-coordinate clustering combining HDBSCAN and DBSCAN."""
+    n = len(y_coords)
+    if n == 0:
+        return []
+    if n == 1:
+        return [0]
+
+    median_font = statistics.median(font_sizes) if font_sizes else 11.0
+    eps = max(4.0, median_font * 0.4)
+
+    try:
+        hdb_labels = hdbscan_1d(y_coords, min_cluster_size=2, min_samples=1)
+    except Exception:
+        hdb_labels = [-1] * n
+
+    labels = list(hdb_labels)
+    next_cluster_id = max(labels) + 1 if labels else 0
+
+    unclustered_indices = [i for i, l in enumerate(labels) if l == -1]
+    if unclustered_indices:
+        unclustered_y = [y_coords[i] for i in unclustered_indices]
+        db_labels = dbscan_1d(unclustered_y, eps=eps, min_pts=1)
+        db_to_global = {}
+        for idx, db_label in zip(unclustered_indices, db_labels):
+            if db_label == -1:
+                labels[idx] = next_cluster_id
+                next_cluster_id += 1
+            else:
+                if db_label not in db_to_global:
+                    db_to_global[db_label] = next_cluster_id
+                    next_cluster_id += 1
+                labels[idx] = db_to_global[db_label]
+
+    return labels
+
+
+def _group_lines_clustering(spans: list[TextSpan]) -> list[list[TextSpan]]:
+    """Group text spans into lines using 1D Y-coordinate clustering."""
+    if not spans:
+        return []
+
+    y_coords = [(s.bbox[1] + s.bbox[3]) / 2 for s in spans]
+    font_sizes = [s.size_pt for s in spans]
+
+    labels = cluster_y_coordinates(y_coords, font_sizes)
+
+    groups: dict[int, list[TextSpan]] = {}
+    for span, label in zip(spans, labels):
+        groups.setdefault(label, []).append(span)
+
+    lines: list[list[TextSpan]] = []
+    for label, group_spans in groups.items():
+        group_spans.sort(key=lambda s: s.bbox[0])
+        lines.append(group_spans)
+
+    lines.sort(key=lambda line: sum((s.bbox[1] + s.bbox[3]) / 2 for s in line) / len(line))
+    return lines
+
+
 def detect_columns(
     spans: list[TextSpan],
     page_width_pt: float,
@@ -1055,71 +1328,106 @@ def detect_columns(
 ) -> list[tuple[float, float]]:
     """Find column x-ranges via horizontal projection of span coverage.
 
-    Sweep-line over text x-intervals: any contiguous gutter of >= `min_gutter_pt`
-    that has zero text coverage separates two columns. Columns thinner than
-    `min_column_pt` are absorbed into their nearest neighbor to avoid splitting
-    on a single floating word.
+    Uses a coverage profile to identify gutters and columns, avoiding naive
+    coordinate checks and handling spanned headers/footers robustly.
     """
     if not spans:
         return [(0.0, page_width_pt)]
 
-    events: list[tuple[float, int]] = []
+    import numpy as np
+
+    # Create a 1D profile of coverage
+    w = int(np.ceil(page_width_pt))
+    profile = np.zeros(w, dtype=int)
+
     for s in spans:
-        x0, _, x1, _ = s.bbox
+        x0 = max(0.0, min(s.bbox[0], page_width_pt))
+        x1 = max(0.0, min(s.bbox[2], page_width_pt))
         if x1 <= x0:
             continue
-        events.append((float(x0), +1))
-        events.append((float(x1), -1))
-    events.sort()
+        ix0 = int(np.floor(x0))
+        ix1 = int(np.ceil(x1))
+        profile[ix0:ix1] += 1
 
-    coverage_runs: list[tuple[float, float]] = []
-    active = 0
-    run_start: float | None = None
-    for x, delta in events:
-        prev = active
-        active += delta
-        if prev == 0 and active > 0:
-            run_start = x
-        elif prev > 0 and active == 0 and run_start is not None:
-            coverage_runs.append((run_start, x))
-            run_start = None
-    if run_start is not None:
-        coverage_runs.append((run_start, float(page_width_pt)))
+    max_cov = np.max(profile)
+    if max_cov == 0:
+        return [(0.0, page_width_pt)]
 
-    # Merge runs separated by gutters smaller than min_gutter_pt.
-    merged: list[tuple[float, float]] = []
-    for start, end in coverage_runs:
-        if merged and start - merged[-1][1] < min_gutter_pt:
-            merged[-1] = (merged[-1][0], end)
+    # Threshold for a gutter: coverage must be <= threshold
+    # If max_cov is small (<= 3), we require gutter coverage to be exactly 0.
+    # Otherwise, we allow up to 20% of max coverage.
+    threshold = 0 if max_cov <= 3 else int(max_cov * 0.2)
+
+    is_gutter = profile <= threshold
+
+    # Find contiguous gutter intervals
+    gutters: list[tuple[int, int]] = []
+    in_gutter = False
+    gutter_start = 0
+    for x in range(w):
+        if is_gutter[x]:
+            if not in_gutter:
+                gutter_start = x
+                in_gutter = True
         else:
-            merged.append((start, end))
+            if in_gutter:
+                gutters.append((gutter_start, x))
+                in_gutter = False
+    if in_gutter:
+        gutters.append((gutter_start, w))
 
-    # Drop columns thinner than min_column_pt by merging into nearest neighbor.
-    if len(merged) > 1:
+    # Find the overall text boundaries
+    active_indices = np.where(profile > 0)[0]
+    if len(active_indices) == 0:
+        return [(0.0, page_width_pt)]
+    text_min = active_indices[0]
+    text_max = active_indices[-1]
+
+    # Filter gutters: must be inside the text boundaries and >= min_gutter_pt wide
+    valid_gutters = []
+    for g_start, g_end in gutters:
+        if g_start > text_min and g_end < text_max and (g_end - g_start) >= min_gutter_pt:
+            valid_gutters.append((g_start, g_end))
+
+    # If no gutters are found inside, it's a single column
+    if not valid_gutters:
+        return [(float(text_min), float(text_max))]
+
+    # Build columns as the intervals between valid gutters
+    columns: list[tuple[float, float]] = []
+    current_start = float(text_min)
+    for g_start, g_end in valid_gutters:
+        if g_start > current_start:
+            columns.append((current_start, float(g_start)))
+        current_start = float(g_end)
+    if text_max > current_start:
+        columns.append((current_start, float(text_max)))
+
+    # Drop columns thinner than min_column_pt by merging with neighbor
+    if len(columns) > 1:
         i = 0
-        while i < len(merged):
-            start, end = merged[i]
+        while i < len(columns):
+            start, end = columns[i]
             if end - start < min_column_pt:
                 if i == 0:
-                    merged[1] = (start, merged[1][1])
-                    merged.pop(0)
-                elif i == len(merged) - 1:
-                    merged[i - 1] = (merged[i - 1][0], end)
-                    merged.pop(i)
+                    columns[1] = (start, columns[1][1])
+                    columns.pop(0)
+                elif i == len(columns) - 1:
+                    columns[i - 1] = (columns[i - 1][0], end)
+                    columns.pop(i)
                     i -= 1
                 else:
-                    # Merge into whichever neighbor has the smaller gutter.
-                    left_gap = start - merged[i - 1][1]
-                    right_gap = merged[i + 1][0] - end
+                    left_gap = start - columns[i - 1][1]
+                    right_gap = columns[i + 1][0] - end
                     if left_gap <= right_gap:
-                        merged[i - 1] = (merged[i - 1][0], end)
+                        columns[i - 1] = (columns[i - 1][0], end)
                     else:
-                        merged[i + 1] = (start, merged[i + 1][1])
-                    merged.pop(i)
+                        columns[i + 1] = (start, columns[i + 1][1])
+                    columns.pop(i)
                     continue
             i += 1
 
-    return merged if merged else [(0.0, page_width_pt)]
+    return columns if columns else [(0.0, page_width_pt)]
 
 
 def _spans_in_column(spans: list[TextSpan], col: tuple[float, float]) -> list[TextSpan]:
@@ -1200,43 +1508,108 @@ def _classify_pdf_layout_v2(extraction: PdfExtraction) -> list[ClassifiedBlock]:
     heading_threshold = body_size * 1.15
 
     for page in extraction.pages:
-        columns = detect_columns(page.spans, page.page_width_pt)
-        for column in columns:
-            col_spans = _spans_in_column(page.spans, column)
-            if not col_spans:
+        # Group page spans into vertical lines using DBSCAN/HDBSCAN
+        lines = _group_lines_clustering(page.spans)
+        if not lines:
+            continue
+
+        # Segment lines into horizontal tracks (rows) based on vertical gap to prevent collisions
+        tracks: list[list[list[TextSpan]]] = []
+        current_track: list[list[TextSpan]] = [lines[0]]
+
+        for prev_line, cur_line in zip(lines, lines[1:]):
+            prev_bbox = _line_bbox(prev_line)
+            cur_bbox = _line_bbox(cur_line)
+            prev_size = max(s.size_pt for s in prev_line)
+            cur_size = max(s.size_pt for s in cur_line)
+            line_height = min(prev_size, cur_size) * 1.2
+            gap = cur_bbox[1] - prev_bbox[3]
+
+            # If the gap is small or lines overlap, group in the same track
+            if gap <= line_height * 1.5:
+                current_track.append(cur_line)
+            else:
+                tracks.append(current_track)
+                current_track = [cur_line]
+        tracks.append(current_track)
+
+        # Process each track: detect columns within it to isolate spanned elements
+        for track_lines in tracks:
+            track_spans = [s for line in track_lines for s in line]
+            if not track_spans:
                 continue
-            lines = _group_lines(col_spans)
-            block_lines_list = _group_blocks(lines)
-            for block in block_lines_list:
-                block_spans = [s for line in block for s in line]
-                if not block_spans:
-                    continue
-                # Try v2's cross-row table detector first; fall back to v1 path.
-                table_rows = _detect_table_v2(block)
-                if table_rows is not None:
-                    bbox = _line_bbox(block_spans)
-                    classified.append(
-                        ClassifiedBlock(
-                            block_type="table",
-                            text=None,
-                            items=None,
-                            rows=table_rows,
-                            font=_majority_font(block_spans),
-                            size_pt=round(_avg_size(block_spans), 1),
-                            color_hex=_majority_color(block_spans),
-                            bold=_is_bold(block_spans),
-                            italic=sum(1 for s in block_spans if s.italic) > len(block_spans) / 2,
-                            align=_line_align(bbox[0], bbox[2], page.page_width_pt),
-                            bbox=bbox,
-                            page_index=page.page_index,
+
+            columns = detect_columns(track_spans, page.page_width_pt)
+
+            if len(columns) <= 1:
+                # Single-column track
+                block_lines_list = _group_blocks(track_lines)
+                for block in block_lines_list:
+                    block_spans = [s for line in block for s in line]
+                    if not block_spans:
+                        continue
+                    table_rows = _detect_table_v2(block)
+                    if table_rows is not None:
+                        bbox = _line_bbox(block_spans)
+                        classified.append(
+                            ClassifiedBlock(
+                                block_type="table",
+                                text=None,
+                                items=None,
+                                rows=table_rows,
+                                font=_majority_font(block_spans),
+                                size_pt=round(_avg_size(block_spans), 1),
+                                color_hex=_majority_color(block_spans),
+                                bold=_is_bold(block_spans),
+                                italic=sum(1 for s in block_spans if s.italic) > len(block_spans) / 2,
+                                align=_line_align(bbox[0], bbox[2], page.page_width_pt),
+                                bbox=bbox,
+                                page_index=page.page_index,
+                            )
                         )
+                        continue
+                    cb = _classify_block_spans(
+                        block, page.page_width_pt, page.page_index, body_size, heading_threshold
                     )
-                    continue
-                cb = _classify_block_spans(
-                    block, page.page_width_pt, page.page_index, body_size, heading_threshold
-                )
-                if cb is not None:
-                    classified.append(cb)
+                    if cb is not None:
+                        classified.append(cb)
+            else:
+                # Multi-column track
+                for column in columns:
+                    col_spans = _spans_in_column(track_spans, column)
+                    if not col_spans:
+                        continue
+                    col_lines = _group_lines_clustering(col_spans)
+                    block_lines_list = _group_blocks(col_lines)
+                    for block in block_lines_list:
+                        block_spans = [s for line in block for s in line]
+                        if not block_spans:
+                            continue
+                        table_rows = _detect_table_v2(block)
+                        if table_rows is not None:
+                            bbox = _line_bbox(block_spans)
+                            classified.append(
+                                ClassifiedBlock(
+                                    block_type="table",
+                                    text=None,
+                                    items=None,
+                                    rows=table_rows,
+                                    font=_majority_font(block_spans),
+                                    size_pt=round(_avg_size(block_spans), 1),
+                                    color_hex=_majority_color(block_spans),
+                                    bold=_is_bold(block_spans),
+                                    italic=sum(1 for s in block_spans if s.italic) > len(block_spans) / 2,
+                                    align=_line_align(bbox[0], bbox[2], page.page_width_pt),
+                                    bbox=bbox,
+                                    page_index=page.page_index,
+                                )
+                            )
+                            continue
+                        cb = _classify_block_spans(
+                            block, page.page_width_pt, page.page_index, body_size, heading_threshold
+                        )
+                        if cb is not None:
+                            classified.append(cb)
     return classified
 
 
@@ -1487,8 +1860,9 @@ def render_layout_screenshot(layout_json_str: str, output_path, width: int = 816
 
 def calculate_visual_regression(ground_truth_path: Path, candidate_path: Path, diff_output_path: Path) -> float:
     """
-    Evaluates pixel alignment variations via grayscale difference models,
-    tints layout tracking anomalies in bright red, and returns total error percentages.
+    Evaluates visual regression using the Complex Wavelet SSIM (CW-SSIM) metric,
+    incorporating mean Perturbation Effect (mPE) analysis and spatial matching.
+    Tints layout tracking anomalies in bright red and returns a robust layout error score (%).
     """
     import cv2
     import numpy as np
@@ -1502,18 +1876,109 @@ def calculate_visual_regression(ground_truth_path: Path, candidate_path: Path, d
     if img_gt.shape != img_cand.shape:
         img_cand = cv2.resize(img_cand, (img_gt.shape[1], img_gt.shape[0]))
 
+    # --- CW-SSIM calculation ---
+    def compute_cw_ssim(im1: np.ndarray, im2: np.ndarray) -> float:
+        # Convert to float64 normalized arrays
+        im1_f = im1.astype(np.float64) / 255.0
+        im2_f = im2.astype(np.float64) / 255.0
+
+        # Define Gabor filters at 4 orientations (0, 45, 90, 135 degrees)
+        orientations = [0, np.pi / 4, np.pi / 2, 3 * np.pi / 4]
+        wavelength = 4.0
+        sigma = 2.0
+        size = 11
+        half_s = size // 2
+        y, x = np.meshgrid(np.arange(-half_s, half_s + 1), np.arange(-half_s, half_s + 1))
+
+        subband_similarities = []
+        K = 0.0001
+
+        for theta in orientations:
+            x_theta = x * np.cos(theta) + y * np.sin(theta)
+            y_theta = -x * np.sin(theta) + y * np.cos(theta)
+
+            gabor_real = np.exp(-(x_theta**2 + y_theta**2) / (2 * sigma**2)) * np.cos(2 * np.pi * x_theta / wavelength)
+            gabor_imag = np.exp(-(x_theta**2 + y_theta**2) / (2 * sigma**2)) * np.sin(2 * np.pi * x_theta / wavelength)
+
+            # Subtract mean to ensure zero DC component
+            gabor_real -= gabor_real.mean()
+            gabor_imag -= gabor_imag.mean()
+
+            # Convolve using cv2.filter2D for speed
+            c1_real = cv2.filter2D(im1_f, cv2.CV_64F, gabor_real)
+            c1_imag = cv2.filter2D(im1_f, cv2.CV_64F, gabor_imag)
+            c1 = c1_real + 1j * c1_imag
+
+            c2_real = cv2.filter2D(im2_f, cv2.CV_64F, gabor_real)
+            c2_imag = cv2.filter2D(im2_f, cv2.CV_64F, gabor_imag)
+            c2 = c2_real + 1j * c2_imag
+
+            # Local complex correlation map
+            c1c2_conj = c1 * np.conj(c2)
+            c1_2 = np.abs(c1)**2
+            c2_2 = np.abs(c2)**2
+
+            # Compute local window sum via cv2.boxFilter
+            sum_conj_real = cv2.boxFilter(c1c2_conj.real, -1, (7, 7), normalize=False)
+            sum_conj_imag = cv2.boxFilter(c1c2_conj.imag, -1, (7, 7), normalize=False)
+            sum_conj_abs = np.sqrt(sum_conj_real**2 + sum_conj_imag**2)
+
+            sum_c1_2 = cv2.boxFilter(c1_2, -1, (7, 7), normalize=False)
+            sum_c2_2 = cv2.boxFilter(c2_2, -1, (7, 7), normalize=False)
+
+            num = 2.0 * sum_conj_abs + K
+            den = sum_c1_2 + sum_c2_2 + K
+
+            ssim_map = np.where(den > 0, num / den, 1.0)
+            subband_similarities.append(np.mean(ssim_map))
+
+        return float(np.mean(subband_similarities))
+
+    cw_ssim_val = compute_cw_ssim(img_gt, img_cand)
+    # Visual regression error percentage (%)
+    error_score = (1.0 - cw_ssim_val) * 100.0
+
+    # --- mPE (mean Perturbation Effect) calculation ---
+    def compute_mpe(im_gt: np.ndarray, im_cand: np.ndarray, base_ssim: float) -> float:
+        drops = []
+        # 1. Gaussian blur perturbation (severity: kernel size 3 and 5)
+        for ksize in [3, 5]:
+            blurred = cv2.GaussianBlur(im_cand, (ksize, ksize), 0)
+            ssim_blur = compute_cw_ssim(im_gt, blurred)
+            drops.append(max(0.0, base_ssim - ssim_blur))
+        # 2. Translation perturbation (severity: shift by 1 and 2 pixels)
+        for shift in [1, 2]:
+            matrix = np.float32([[1, 0, shift], [0, 1, shift]])
+            shifted = cv2.warpAffine(im_cand, matrix, (im_cand.shape[1], im_cand.shape[0]), borderMode=cv2.BORDER_REPLICATE)
+            ssim_shift = compute_cw_ssim(im_gt, shifted)
+            drops.append(max(0.0, base_ssim - ssim_shift))
+        # 3. Pixel noise perturbation (severity: sigma 5 and 10)
+        for noise_sigma in [5, 10]:
+            noise = np.random.normal(0, noise_sigma, im_cand.shape).astype(np.int16)
+            noisy = np.clip(im_cand.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+            ssim_noise = compute_cw_ssim(im_gt, noisy)
+            drops.append(max(0.0, base_ssim - ssim_noise))
+        return float(np.mean(drops)) if drops else 0.0
+
+    mpe_val = compute_mpe(img_gt, img_cand, cw_ssim_val)
+    print(f"[Telemetry metrics] CW-SSIM Similarity: {cw_ssim_val:.4f}, Layout mPE Index: {mpe_val:.4f}")
+
+    # --- Robust difference masking & red highlighting ---
     diff = cv2.absdiff(img_gt, img_cand)
     _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+
+    # Filter out isolated sub-pixel anti-aliasing noise using morphological opening
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    thresh_clean = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_open)
 
     color_cand = cv2.imread(str(candidate_path))
     if color_cand.shape[:2] != img_gt.shape[:2]:
         color_cand = cv2.resize(color_cand, (img_gt.shape[1], img_gt.shape[0]))
 
-    # Paint misalignment vectors explicitly in BGR Red [0, 0, 255]
-    color_cand[thresh == 255] = [0, 0, 255]
+    # Paint macro-level layout anomalies in BGR Red
+    color_cand[thresh_clean == 255] = [0, 0, 255]
     cv2.imwrite(str(diff_output_path), color_cand)
 
-    mismatch_pixels = np.sum(thresh == 255)
-    total_pixels = img_gt.shape[0] * img_gt.shape[1]
-    return (mismatch_pixels / total_pixels) * 100
+    return error_score
+
 

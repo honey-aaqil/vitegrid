@@ -8,12 +8,14 @@ import {
   LineRuleType,
   Packer,
   Paragraph,
+  ParagraphRunProperties,
   Table,
   TableCell,
   TableLayoutType,
   TableRow,
   TextRun,
   WidthType,
+  XmlComponent,
 } from "docx";
 import type {
   CellPaddingDxa,
@@ -23,7 +25,7 @@ import type {
   SpacingTokens,
   StyleTokens,
 } from "../types";
-import { DEFAULT_SPACING_TOKENS } from "../types";
+import { DEFAULT_SPACING_TOKENS, DEFAULT_STYLE_TOKENS } from "../types";
 
 export const EMU_PER_INCH = 914_400;
 export const EMU_PER_CM = 360_000;
@@ -41,6 +43,49 @@ export function pxToDxa(px: number): number {
 
 export function inchesToEmu(inches: number): number {
   return Math.round(inches * EMU_PER_INCH);
+}
+
+export class CustomFonts extends XmlComponent {
+  constructor(asciiTheme?: string, cstheme?: string, ascii?: string) {
+    super("w:rFonts");
+    this.root = [{
+      _attr: {
+        "w:asciiTheme": asciiTheme || "majorHAnsi",
+        "w:cstheme": cstheme || "majorBidi",
+        "w:ascii": ascii || "Arial",
+        "w:hAnsi": ascii || "Arial",
+      }
+    }];
+  }
+}
+
+export function createSafeParagraph(
+  options: ConstructorParameters<typeof Paragraph>[0],
+  style: StyleTokens | undefined,
+): Paragraph {
+  const fontSize = style && style.font_size_pt && style.font_size_pt > 0 ? style.font_size_pt : 11.0;
+  const sizeVal = Math.max(2, Math.round(fontSize * 2));
+
+  const mergedOptions = {
+    ...options,
+    run: {
+      ...options.run,
+      size: sizeVal,
+    },
+  };
+
+  const p = new Paragraph(mergedOptions);
+
+  let rPr = p.properties.root.find((child) => child.constructor.name === "ParagraphRunProperties");
+  if (!rPr) {
+    rPr = new ParagraphRunProperties();
+    p.properties.push(rPr);
+  }
+
+  const fontFamily = style ? style.font_family : "Arial";
+  rPr.push(new CustomFonts("majorHAnsi", "majorBidi", fontFamily));
+
+  return p;
 }
 
 const DEFAULT_CELL_PADDING_DXA: CellPaddingDxa = {
@@ -131,13 +176,22 @@ function cellPaddingFor(style: StyleTokens): CellPaddingDxa {
 }
 
 function textRun(text: string, style: StyleTokens): TextRun {
-  return new TextRun({
+  const fontSize = style.font_size_pt && style.font_size_pt > 0 ? style.font_size_pt : 11.0;
+  const sizeVal = Math.max(2, Math.round(fontSize * 2));
+
+  const run = new TextRun({
     text,
     bold: style.font_weight === "bold",
     color: style.color_hex ? style.color_hex.replace("#", "") : undefined,
     font: style.font_family,
-    size: style.font_size_pt ? Math.round(style.font_size_pt * 2) : undefined,
+    size: sizeVal,
   });
+
+  if (run.properties) {
+    run.properties.push(new CustomFonts("majorHAnsi", "majorBidi", style.font_family));
+  }
+
+  return run;
 }
 
 async function loadImageBytes(url: string): Promise<{ data: ArrayBuffer; width: number; height: number }> {
@@ -164,27 +218,33 @@ async function loadImageBytes(url: string): Promise<{ data: ArrayBuffer; width: 
 async function blockToChildren(
   block: DocumentBlock,
   contentWidthDxa: number,
+  spacingOverride?: { before: number; after: number },
 ): Promise<(Paragraph | Table)[]> {
   const alignment = alignmentFor(block.style);
-  const spacing = spacingFor(block.spacing);
+  const resolvedSpacingTokens = {
+    ...block.spacing,
+    before_dxa: spacingOverride ? spacingOverride.before : (block.spacing?.before_dxa ?? 0),
+    after_dxa: spacingOverride ? spacingOverride.after : (block.spacing?.after_dxa ?? 0),
+  };
+  const spacing = spacingFor(resolvedSpacingTokens);
 
   switch (block.type) {
     case "heading":
       return [
-        new Paragraph({
+        createSafeParagraph({
           heading: HeadingLevel.HEADING_1,
           alignment,
           spacing,
           children: [textRun(block.text ?? "", block.style)],
-        }),
+        }, block.style),
       ];
     case "paragraph":
       return [
-        new Paragraph({
+        createSafeParagraph({
           alignment,
           spacing,
           children: [textRun(block.text ?? "", block.style)],
-        }),
+        }, block.style),
       ];
     case "list": {
       const items = block.items ?? [];
@@ -193,12 +253,12 @@ async function blockToChildren(
       const level = Math.max(0, Math.min(block.style.list_level ?? 0, 5));
       return items.map(
         (item) =>
-          new Paragraph({
+          createSafeParagraph({
             alignment,
             spacing,
             numbering: { reference, level },
             children: [textRun(item, block.style)],
-          }),
+          }, block.style),
       );
     }
     case "table": {
@@ -260,6 +320,7 @@ async function blockToChildren(
               children: Array.from({ length: colCount }).map((_, colIndex) => {
                 const cellText = row[colIndex] ?? "";
                 const cellWidth = columnWidthsDxa[colIndex];
+                const textToRender = cellText.trim() === "" ? " " : cellText;
                 return new TableCell({
                   width: { size: cellWidth, type: WidthType.DXA },
                   margins: {
@@ -275,7 +336,12 @@ async function blockToChildren(
                     left: border,
                     right: border,
                   },
-                  children: [new Paragraph({ children: [textRun(cellText, block.style)] })],
+                  children: [
+                    createSafeParagraph({
+                      spacing: { before: 0, after: 0 },
+                      children: [textRun(textToRender, { ...block.style, font_size_pt: cellText.trim() === "" ? 1.0 : block.style.font_size_pt })],
+                    }, { ...block.style, font_size_pt: cellText.trim() === "" ? 1.0 : block.style.font_size_pt }),
+                  ],
                 });
               }),
             }),
@@ -285,13 +351,13 @@ async function blockToChildren(
     }
     case "image_placeholder": {
       if (!block.image_ref || !block.bbox) {
-        return [new Paragraph({ children: [textRun("[image placeholder]", block.style)] })];
+        return [createSafeParagraph({ children: [textRun("[image placeholder]", block.style)] }, block.style)];
       }
       try {
         const { data, width, height } = await loadImageBytes(block.image_ref);
         const fitted = fitImageToBox(width, height, block.bbox.width_px, block.bbox.height_px);
         return [
-          new Paragraph({
+          createSafeParagraph({
             alignment,
             spacing,
             children: [
@@ -300,10 +366,10 @@ async function blockToChildren(
                 transformation: { width: fitted.width_px, height: fitted.height_px },
               } as ConstructorParameters<typeof ImageRun>[0]),
             ],
-          }),
+          }, block.style),
         ];
       } catch {
-        return [new Paragraph({ children: [textRun("[missing image]", block.style)] })];
+        return [createSafeParagraph({ children: [textRun("[missing image]", block.style)] }, block.style)];
       }
     }
     case "divider": {
@@ -324,7 +390,7 @@ async function blockToChildren(
       const borderSize = Math.max(1, Math.min(24, Math.round(borderWidth * 8))); // docx border size is in 1/8 pt
 
       return [
-        new Paragraph({
+        createSafeParagraph({
           spacing: { before: 120, after: 120 },
           border: {
             bottom: {
@@ -334,7 +400,8 @@ async function blockToChildren(
               style: BorderStyle.SINGLE,
             },
           },
-        }),
+          children: [textRun(" ", { ...block.style, font_size_pt: 1.0 })],
+        }, { ...block.style, font_size_pt: 1.0 }),
       ];
     }
   }
@@ -529,6 +596,43 @@ export async function compileToDocx(layout: DocumentLayout): Promise<Blob> {
 
   rows.sort((a, b) => a.yStart - b.yStart);
 
+  // Precompute vertically adjacent blocks' spacing overrides in each column track to enforce max spacing overlap
+  const blockBeforeOverrides = new Map<string, number>();
+  const blockAfterOverrides = new Map<string, number>();
+
+  for (let col = 0; col < numCols; col++) {
+    const columnBlocks: DocumentBlock[] = [];
+    for (const row of rows) {
+      const block = row.blocks.find((b) => {
+        const bbox = b.bbox || {
+          x_px: contentLeft,
+          y_px: 0,
+          width_px: contentRight - contentLeft,
+          height_px: 30,
+        };
+        const bx0 = bbox.x_px;
+        const bx1 = bbox.x_px + bbox.width_px;
+        return bx0 <= uniqueX[col] + 5 && bx1 >= uniqueX[col + 1] - 5;
+      });
+      if (block && !columnBlocks.includes(block)) {
+        columnBlocks.push(block);
+      }
+    }
+
+    for (let i = 0; i < columnBlocks.length - 1; i++) {
+      const b1 = columnBlocks[i];
+      const b2 = columnBlocks[i + 1];
+
+      const spaceAfter1 = b1.spacing ? b1.spacing.after_dxa : 0;
+      const spaceBefore2 = b2.spacing ? b2.spacing.before_dxa : 0;
+      const maxOverlap = Math.max(spaceAfter1, spaceBefore2);
+
+      const currentAfter = blockAfterOverrides.get(b1.id) ?? 0;
+      blockAfterOverrides.set(b1.id, Math.max(currentAfter, maxOverlap));
+      blockBeforeOverrides.set(b2.id, 0);
+    }
+  }
+
   const docxRows: TableRow[] = [];
 
   const noBorder = {
@@ -543,27 +647,40 @@ export async function compileToDocx(layout: DocumentLayout): Promise<Blob> {
     while (c < numCols) {
       // Find block covering this column
       const block = row.blocks.find((b) => {
-        if (!b.bbox) return false;
-        const bx0 = b.bbox.x_px;
-        const bx1 = b.bbox.x_px + b.bbox.width_px;
+        const bbox = b.bbox || {
+          x_px: contentLeft,
+          y_px: 0,
+          width_px: contentRight - contentLeft,
+          height_px: 30,
+        };
+        const bx0 = bbox.x_px;
+        const bx1 = bbox.x_px + bbox.width_px;
         return bx0 <= uniqueX[c] + 5 && bx1 >= uniqueX[c + 1] - 5;
       });
 
       if (block) {
         // Calculate colSpan
         let colSpan = 1;
-        if (block.bbox) {
-          const bx1 = block.bbox.x_px + block.bbox.width_px;
-          while (c + colSpan < numCols && uniqueX[c + colSpan + 1] <= bx1 + 5) {
-            colSpan++;
-          }
+        const bbox = block.bbox || {
+          x_px: contentLeft,
+          y_px: 0,
+          width_px: contentRight - contentLeft,
+          height_px: 30,
+        };
+        const bx1 = bbox.x_px + bbox.width_px;
+        while (c + colSpan < numCols && uniqueX[c + colSpan + 1] <= bx1 + 5) {
+          colSpan++;
         }
 
         const cellWidthDxa = colWidthsDxa
           .slice(c, c + colSpan)
           .reduce((sum, w) => sum + w, 0);
 
-        const blockChildren = await blockToChildren(block, cellWidthDxa);
+        const spacingOverride = {
+          before: blockBeforeOverrides.has(block.id) ? blockBeforeOverrides.get(block.id)! : (block.spacing?.before_dxa ?? 0),
+          after: blockAfterOverrides.has(block.id) ? blockAfterOverrides.get(block.id)! : (block.spacing?.after_dxa ?? 0),
+        };
+        const blockChildren = await blockToChildren(block, cellWidthDxa, spacingOverride);
 
         // Apply background shading
         let shadingFill = columnShading[c] || undefined;
@@ -579,7 +696,38 @@ export async function compileToDocx(layout: DocumentLayout): Promise<Blob> {
           right: noBorder,
         };
 
-        if (block.style.line_alignment && block.style.line_alignment !== "none") {
+        if (block.style.border_visible && block.style.border_style && block.style.border_style !== "none") {
+          const thickness = block.style.border_width_px ?? 1;
+          const size = Math.max(1, Math.min(24, Math.round(thickness * 8)));
+          let color = "000000";
+          if (block.style.border_color_rgba) {
+            const m = block.style.border_color_rgba.match(/\d+/g);
+            if (m && m.length >= 3) {
+              const r = parseInt(m[0], 10);
+              const g = parseInt(m[1], 10);
+              const b = parseInt(m[2], 10);
+              color = ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+            }
+          }
+          const borderStyleMap: Record<string, BorderStyle> = {
+            solid: BorderStyle.SINGLE,
+            dashed: BorderStyle.DASHED,
+            dotted: BorderStyle.DOTTED,
+            double: BorderStyle.DOUBLE,
+            none: BorderStyle.NONE,
+          };
+          const borderOpts = {
+            style: borderStyleMap[block.style.border_style] || BorderStyle.SINGLE,
+            size,
+            color,
+          };
+          cellBorders = {
+            top: borderOpts,
+            bottom: borderOpts,
+            left: borderOpts,
+            right: borderOpts,
+          };
+        } else if (block.style.line_alignment && block.style.line_alignment !== "none") {
           const alignment = block.style.line_alignment;
           const thickness = block.style.line_thickness_px ?? 1;
           const size = Math.max(1, Math.min(24, Math.round(thickness * 8)));
@@ -598,6 +746,11 @@ export async function compileToDocx(layout: DocumentLayout): Promise<Blob> {
           if (alignment === "right" || alignment === "all") cellBorders.right = borderOpts;
         }
 
+        const padTop = block.style.cell_padding_dxa && block.style.cell_padding_dxa.top !== 120 ? block.style.cell_padding_dxa.top : 0;
+        const padBottom = block.style.cell_padding_dxa && block.style.cell_padding_dxa.bottom !== 120 ? block.style.cell_padding_dxa.bottom : 0;
+        const padLeft = block.style.cell_padding_dxa && block.style.cell_padding_dxa.left !== 180 ? block.style.cell_padding_dxa.left : 0;
+        const padRight = block.style.cell_padding_dxa && block.style.cell_padding_dxa.right !== 180 ? block.style.cell_padding_dxa.right : 0;
+
         rowCells.push(
           new TableCell({
             width: { size: cellWidthDxa, type: WidthType.DXA },
@@ -605,13 +758,18 @@ export async function compileToDocx(layout: DocumentLayout): Promise<Blob> {
             shading: shadingFill ? { fill: shadingFill } : undefined,
             borders: cellBorders,
             margins: {
-              top: 0,
-              bottom: 0,
-              left: 0,
-              right: 0,
+              top: padTop,
+              bottom: padBottom,
+              left: padLeft,
+              right: padRight,
               marginUnitType: WidthType.DXA,
             },
-            children: blockChildren.length > 0 ? blockChildren : [new Paragraph({})],
+            children: blockChildren.length > 0 ? blockChildren : [
+              createSafeParagraph({
+                spacing: { before: 0, after: 0 },
+                children: [textRun(" ", { ...DEFAULT_STYLE_TOKENS, font_size_pt: 1.0 })],
+              }, { ...DEFAULT_STYLE_TOKENS, font_size_pt: 1.0 })
+            ],
           })
         );
         c += colSpan;
@@ -634,7 +792,12 @@ export async function compileToDocx(layout: DocumentLayout): Promise<Blob> {
               right: 0,
               marginUnitType: WidthType.DXA,
             },
-            children: [new Paragraph({})],
+            children: [
+              createSafeParagraph({
+                spacing: { before: 0, after: 0 },
+                children: [textRun(" ", { ...DEFAULT_STYLE_TOKENS, font_size_pt: 1.0 })],
+              }, { ...DEFAULT_STYLE_TOKENS, font_size_pt: 1.0 })
+            ],
           })
         );
         c++;

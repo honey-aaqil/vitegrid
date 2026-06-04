@@ -68,7 +68,9 @@ async function main(): Promise<void> {
   const buf = Buffer.from(await blob.arrayBuffer());
   const xml = unzip(buf, "proportional");
 
-  const gridCols = [...xml.matchAll(/<w:gridCol w:w="(\d+)"\/>/g)].map((m) => parseInt(m[1], 10));
+  const allGridCols = [...xml.matchAll(/<w:gridCol w:w="(\d+)"\/>/g)].map((m) => parseInt(m[1], 10));
+  // The first gridCol belongs to the master table wrapper. Slice it out to test the inner table.
+  const gridCols = allGridCols.length > 1 ? allGridCols.slice(1) : allGridCols;
   console.log(`  emitted <w:gridCol> widths (DXA): ${gridCols.join(", ")}`);
 
   assert("3 grid columns emitted", gridCols.length === 3, `got ${gridCols.length}`);
@@ -125,8 +127,10 @@ async function main(): Promise<void> {
   const blob2 = await compileToDocx(lopsided);
   const buf2 = Buffer.from(await blob2.arrayBuffer());
   const xml2 = unzip(buf2, "lopsided");
-  const tcCount = (xml2.match(/<w:tc>/g) ?? []).length;
-  console.log(`  total <w:tc> emitted: ${tcCount}`);
+  const allTcCount = (xml2.match(/<w:tc>/g) ?? []).length;
+  // Subtract the master table wrapper cell
+  const tcCount = allTcCount > 0 ? allTcCount - 1 : 0;
+  console.log(`  total <w:tc> emitted: ${allTcCount} (inner cells: ${tcCount})`);
   assert("short row padded to 3 cells (total 6 across both rows)", tcCount === 6, `got ${tcCount}`);
 
   if (failures) {
